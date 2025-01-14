@@ -1,5 +1,5 @@
 site_name: pg-nearest-city
-site_description: Given a geopoint, find the nearest city using PostGIS.
+site_description: Given a geopoint, find the nearest city using PostGIS (reverse geocode).
 # strict: true
 site_url: "https://www.hotosm.org"
 

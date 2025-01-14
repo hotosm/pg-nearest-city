@@ -5,7 +5,7 @@
   <img src="https://raw.githubusercontent.com/hotosm/pg-nearest-city/refs/heads/main/docs/images/hot_logo.png" style="width: 200px;" alt="HOT"></a>
 </p>
 <p align="center">
-  <em>Given a geopoint, find the nearest city using PostGIS.</em>
+  <em>Given a geopoint, find the nearest city using PostGIS (reverse geocode).</em>
 </p>
 <p align="center">
   <a href="https://github.com/hotosm/pg-nearest-city/actions/workflows/docs.yml" target="_blank">
@@ -40,13 +40,44 @@
 
 ## Why do we need this?
 
--
+This package was developed primarily as a **basic** reverse geocoder for use within
+web frameworks (APIs) that have an existing PostGIS connection to utilise.
+
+- The reverse geocoding package in Python [here](https://github.com/thampiman/reverse-geocoder)
+  is probably the original and canonincal implementation using K-D tree.
+  - However, it's a bit outdated now, with numerous unattended pull
+    requests and uses an unfavourable multiprocessing-based approach.
+- The package [here](https://github.com/richardpenman/reverse_geocode) is an excellent
+  revamp of the package above, an likely the best choice in many scenarios.
+
+The K-D tree implementation in Python is performant (see [benchmarks]()) and an excellent
+choice for scripts.
+
+However, it does leave a large memory footprint of approximately 160Mb to load the
+K-D tree in memory (see [benchmarks]()).
+
+Once computed, the K-D tree remains in memory! This is an unacceptable compromise
+for a web server, for such a small amount of functionality, particularly if the
+web server is run via a container orchestrator as replicas with minimal memory.
+
+As we already have a Postgres database running alongside our webserver, an approach
+to simply query via pre-loaded data via PostGIS is much more memory efficient (~2Mb)
+and has an acceptable performance penalty (see [benchmarks]()).
 
 ## Priorities
 
--
+- Lightweight package size.
+- Minimal memory footprint.
+- Reasonably good performance.
 
-## History
+## How This Package Works
+
+- geonames.org data.
+- Voronoi polygons based on geopoints.
+- Gzipped data bundled with package.
+- Query the Voronois.
+
+## Benchmarks
 
 -
 

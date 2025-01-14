@@ -1,7 +1,7 @@
 [project]
 name = "pg-nearest-city"
 version = "0.0.0"
-description = "Given a geopoint, find the nearest city using PostGIS."
+description = "Given a geopoint, find the nearest city using PostGIS (reverse geocode)."
 authors = [
     {name = "Sam Woodcock", email = "sam.woodcock@hotosm.org"},
     {name = "Emir Fabio Cognigni", email = "redacted"},
