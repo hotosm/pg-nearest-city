@@ -1,0 +1,25 @@
+# gdb_history
+TAGS
+*~
+.deps
+.libs
+py-compile
+NEWS
+*__pycache__/
+
+# output files
+*.txt
+*.xml
+*.geojson
+*.pbf
+*.xml
+*.html
+
+# Python builds
+build
+dist
+*.egg-info
+
+# Docs
+site
+.cache

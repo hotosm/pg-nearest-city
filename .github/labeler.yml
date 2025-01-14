@@ -1,0 +1,24 @@
+bug:
+  # Branch starts with `fix` or has a `fix` in the name
+  - head-branch: ["^fix", "fix"]
+enhancement:
+  - head-branch:
+      ["^feature", "feature", "^feat", "feat", "^refactor", "refactor"]
+devops:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+dependency:
+  - changed-files:
+      - any-glob-to-any-file:
+          - pyproject.toml
+          - uv.lock
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - mkdocs.yml
+          - README.md
+version:
+  - changed-files:
+      - any-glob-to-any-file: pg_nearest_city/__version__.py

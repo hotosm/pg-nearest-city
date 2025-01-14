@@ -1,0 +1,63 @@
+site_name: pg-nearest-city
+site_description: Given a geopoint, find the nearest city using PostGIS.
+# strict: true
+site_url: "https://www.hotosm.org"
+
+repo_name: "hotosm/pg-nearest-city"
+repo_url: "https://github.com/hotosm/pg-nearest-city/"
+edit_uri: "edit/main/docs/"
+
+extra:
+  social:
+    - icon: "fontawesome/brands/github"
+      link: "https://github.com/hotosm/"
+    - icon: "fontawesome/brands/twitter"
+      link: "https://twitter.com/hotosm"
+    - icon: "fontawesome/solid/globe"
+      link: "https://www.hotosm.org"
+  copyright: Copyright &copy; 2010 HOTOSM
+  generator: false
+
+theme:
+  name: material
+  palette:
+    primary: custom
+  favicon: images/favicon.png
+  logo: images/hot_logo.png
+  # custom_dir: docs/overrides
+
+extra_css:
+  - css/extra.css
+
+markdown_extensions:
+  - tables
+  - toc:
+      permalink: true
+      title: Page contents
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.extra
+  - pymdownx.emoji:
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+  - git-revision-date-localized
+  - exclude:
+      glob:
+        - plugins/*
+        - __pycache__/*
+  - mkdocstrings:
+      default_handler: python
+
+nav:
+  - Home: index.md
+  - Get Started:
+      - License: LICENSE.md
+      - Changelog: CHANGELOG.md
+      - Code of Conduct: https://docs.hotosm.org/code-of-conduct
+      - Versioning: https://docs.hotosm.org/dev-guide/repo-management/version-control/#creating-releases
+  - API: api.md

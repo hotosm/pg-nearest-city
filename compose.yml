@@ -1,0 +1,58 @@
+# Copyright (c) Humanitarian OpenStreetMap Team
+# This file is part of pg-nearest-city.
+#
+#     pg-nearest-city is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     pg-nearest-city is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with pg-nearest-city.  If not, see <https:#www.gnu.org/licenses/>.
+#
+
+networks:
+  net:
+    name: pg-nearest-city
+
+services:
+  code:
+    image: "ghcr.io/hotosm/pg-nearest-city:${TAG_OVERRIDE:-ci}"
+    build:
+      target: ci
+    container_name: pg-nearest-city
+    volumes:
+      # Mount local package
+      - ./pg_nearest_city:/opt/python/lib/python3.10/site-packages/pg_nearest_city
+      # Mount local tests
+      - ./tests:/data/tests
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - net
+    restart: "no"
+    command: "pytest"
+
+  db:
+    image: "postgis/postgis:17-3.5-alpine"
+    container_name: pg-nearest-city-db
+    environment:
+      - POSTGRES_USER=cities
+      - POSTGRES_PASSWORD=dummycipassword
+      - POSTGRES_DB=cities
+    ports:
+      - "5439:5432"
+    networks:
+      - net
+    restart: "unless-stopped"
+    healthcheck:
+      test: pg_isready -U cities -d cities
+      start_period: 5s
+      interval: 10s
+      timeout: 5s
+      retries: 3
