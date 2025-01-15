@@ -1,8 +1,10 @@
 import psycopg
+import gzip
 
 from dataclasses import dataclass
 from typing import Optional
 import importlib.resources
+
 
 from psycopg import sql
 
@@ -38,11 +40,11 @@ class ReverseGeocoder:
         self.conn_string = config.get_connection_string()
 
         with importlib.resources.path(
-            "pg_nearest_city.data", "cities_1000_simple.txt"
+            "pg_nearest_city.data", "cities_1000_simple.txt.gz"
         ) as cities_path:
             self.cities_file = cities_path
         with importlib.resources.path(
-            "pg_nearest_city.data", "voronois.wkb"
+            "pg_nearest_city.data", "voronois.wkb.gz"
         ) as voronoi_path:
             self.voronoi_file = voronoi_path
 
@@ -128,7 +130,7 @@ class ReverseGeocoder:
     def _import_cities(self, cur):
         """Import city data using COPY protocol."""
         with cur.copy("COPY geocoding(city, country, lat, lon) FROM STDIN") as copy:
-            with open(self.cities_file, "r") as f:
+            with gzip.open(self.cities_file, "r") as f:
                 copied_bytes = 0
                 while data := f.read(8192):
                     copy.write(data)
@@ -161,7 +163,7 @@ class ReverseGeocoder:
 
         # Import the binary WKB data
         with cur.copy("COPY voronoi_import (city, country, wkb) FROM STDIN") as copy:
-            with open(self.voronoi_file, "rb") as f:
+            with gzip.open(self.voronoi_file, "rb") as f:
                 while data := f.read(8192):
                     copy.write(data)
 
