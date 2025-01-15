@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Given a geopoint, find the nearest city using PostGIS (reverse geocode)."
 authors = [
     {name = "Sam Woodcock", email = "sam.woodcock@hotosm.org"},
-    {name = "Emir Fabio Cognigni", email = "redacted"},
+    {name = "Emir Fabio Cognigni"}
 ]
 readme = "README.md"
 license = {text = "GPL-3.0-only"}
@@ -40,6 +40,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["pg_nearest_city"]
+include = [
+    "pg_nearest_city/data/cities_1000_simple.txt",
+    "pg_nearest_city/data/voronois.wkb",
+]
 
 [tool.ruff]
 fix = true
