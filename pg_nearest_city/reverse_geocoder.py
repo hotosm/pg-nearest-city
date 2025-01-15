@@ -123,6 +123,12 @@ class ReverseGeocoder:
                     self._create_spatial_index(cur)
 
                     conn.commit()
+
+                    # Clean up the voronoi file after successful import
+                    if self.voronoi_file.exists():
+                        self.voronoi_file.unlink()
+                        print("Cleaned up Voronoi file to save disk space")
+
                     print("Initialization complete!")
         except Exception as e:
             raise RuntimeError(f"Database initialization failed: {str(e)}")
