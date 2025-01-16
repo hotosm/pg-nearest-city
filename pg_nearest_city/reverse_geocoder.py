@@ -30,14 +30,16 @@ class Location:
 
 
 class ReverseGeocoder:
-    def __init__(self, config: DbConfig):
-        """Initialize reverse geocoder with database configuration and data directory.
+    def __init__(self, db: DbConfig | psycopg.Connection):
+        """Initialize reverse geocoder with database configuration or existing connection.
 
         Args:
-            config: Database connection configuration
-            data_dir: Directory containing required data files
+            db: Either a DbConfig object for new connections or an existing psycopg Connection
         """
-        self.conn_string = config.get_connection_string()
+
+        self.db = db
+        self._connection = None
+        self.is_external_connection = isinstance(db, psycopg.Connection)
 
         with importlib.resources.path(
             "pg_nearest_city.data", "cities_1000_simple.txt.gz"
@@ -53,12 +55,32 @@ class ReverseGeocoder:
         if not self.voronoi_file.exists():
             raise FileNotFoundError(f"Voronoi file not found: {self.voronoi_file}")
 
-    def _get_connection(self):
-        """Create and return a database connection."""
-        try:
-            return psycopg.connect(self.conn_string)
-        except Exception as e:
-            raise RuntimeError(f"Failed to connect to database: {str(e)}")
+    def _get_connection(self) -> psycopg.Connection:
+        """Get or create database connection."""
+        if self.is_external_connection:
+            return self.db
+            
+        if self._connection is None or self._connection.closed:
+            try:
+                self._connection = psycopg.connect(self.db.get_connection_string())
+            except Exception as e:
+                raise RuntimeError(f"Database connection failed: {str(e)}")
+        
+        return self._connection
+
+    def close(self) -> None:
+        """Close the internal connection if we're managing it."""
+        if not self.is_external_connection and self._connection is not None:
+            self._connection.close()
+            self._connection = None
+
+    def __enter__(self) -> 'ReverseGeocoder':
+        """Enable context manager support."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Cleanup when used as context manager."""
+        self.close()
 
     def reverse_geocode(self, lat: float, lon: float) -> Optional[Location]:
         """Find the nearest city to the given coordinates using Voronoi regions.
@@ -88,48 +110,48 @@ class ReverseGeocoder:
         """).format(sql.Literal(lon), sql.Literal(lat))
 
         try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(query)
-                    result = cur.fetchone()
+            conn = self._get_connection()
+            with conn.cursor() as cur:
+                cur.execute(query)
+                result = cur.fetchone()
 
-                    if not result:
-                        return None
+                if not result:
+                    return None
 
-                    return Location(
-                        city=result[0],
-                        country=result[1],
-                        lat=float(result[2]),
-                        lon=float(result[3]),
-                    )
+                return Location(
+                    city=result[0],
+                    country=result[1],
+                    lat=float(result[2]),
+                    lon=float(result[3]),
+                )
         except Exception as e:
             raise RuntimeError(f"Reverse geocoding failed: {str(e)}")
 
     def initialize(self) -> None:
         """Initialize the geocoding database with cities and Voronoi regions."""
         try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    print("Creating geocoding table...")
-                    self._create_geocoding_table(cur)
+            conn = self._get_connection()
+            with conn.cursor() as cur:
+                print("Creating geocoding table...")
+                self._create_geocoding_table(cur)
 
-                    print("Importing city data...")
-                    self._import_cities(cur)
+                print("Importing city data...")
+                self._import_cities(cur)
 
-                    print("Processing Voronoi polygons...")
-                    self._import_voronoi_polygons(cur)
+                print("Processing Voronoi polygons...")
+                self._import_voronoi_polygons(cur)
 
-                    print("Creating spatial index...")
-                    self._create_spatial_index(cur)
+                print("Creating spatial index...")
+                self._create_spatial_index(cur)
 
-                    conn.commit()
+                conn.commit()
 
-                    # Clean up the voronoi file after successful import
-                    if self.voronoi_file.exists():
-                        self.voronoi_file.unlink()
-                        print("Cleaned up Voronoi file to save disk space")
+                # Clean up the voronoi file after successful import
+                if self.voronoi_file.exists():
+                    self.voronoi_file.unlink()
+                    print("Cleaned up Voronoi file to save disk space")
 
-                    print("Initialization complete!")
+                print("Initialization complete!")
         except Exception as e:
             raise RuntimeError(f"Database initialization failed: {str(e)}")
 
