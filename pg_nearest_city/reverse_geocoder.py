@@ -50,10 +50,6 @@ class ReverseGeocoder:
         ) as voronoi_path:
             self.voronoi_file = voronoi_path
 
-        if not self.cities_file.exists():
-            raise FileNotFoundError(f"Cities file not found: {self.cities_file}")
-        if not self.voronoi_file.exists():
-            raise FileNotFoundError(f"Voronoi file not found: {self.voronoi_file}")
 
     def _get_connection(self) -> psycopg.Connection:
         """Get or create database connection."""
@@ -156,6 +152,10 @@ class ReverseGeocoder:
             raise RuntimeError(f"Database initialization failed: {str(e)}")
 
     def _import_cities(self, cur):
+
+        if not self.cities_file.exists():
+            raise FileNotFoundError(f"Cities file not found: {self.cities_file}")
+
         """Import city data using COPY protocol."""
         with cur.copy("COPY geocoding(city, country, lat, lon) FROM STDIN") as copy:
             with gzip.open(self.cities_file, "r") as f:
@@ -180,6 +180,10 @@ class ReverseGeocoder:
 
     def _import_voronoi_polygons(self, cur):
         """Import and integrate Voronoi polygons into the main table."""
+
+        if not self.voronoi_file.exists():
+            raise FileNotFoundError(f"Voronoi file not found: {self.voronoi_file}")
+
         # First create temporary table for the import
         cur.execute("""
             CREATE TEMP TABLE voronoi_import (
