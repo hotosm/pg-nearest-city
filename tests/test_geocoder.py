@@ -3,7 +3,7 @@
 import os
 import psycopg
 import pytest
-from pg_nearest_city.reverse_geocoder import ReverseGeocoder, DbConfig
+from pg_nearest_city.nearest_city import NearestCity, DbConfig
 
 
 def get_test_config():
@@ -21,10 +21,10 @@ def test_full_initialization():
     """Test full database initialization process."""
 
     config = get_test_config()
-    geocoder = ReverseGeocoder(config)
+    geocoder = NearestCity(config)
     geocoder.initialize()
 
-    location = geocoder.reverse_geocode(40.7128, -74.0060)
+    location = geocoder.query(40.7128, -74.0060)
     assert location is not None
     assert location.city == "New York City"
 
@@ -34,8 +34,8 @@ def test_full_initialization():
 def test_external_connection():
     """Test using an external connection."""
     with psycopg.connect(get_test_config().get_connection_string()) as external_conn:
-        geocoder = ReverseGeocoder(external_conn)
-        location = geocoder.reverse_geocode(40.7128, -74.0060)
+        geocoder = NearestCity(external_conn)
+        location = geocoder.query(40.7128, -74.0060)
         assert location is not None
 
 
@@ -47,7 +47,7 @@ def test_db():
     # Connect and clean up any existing state
     with psycopg.connect(config.get_connection_string()) as conn:
         with conn.cursor() as cur:
-            cur.execute("DROP TABLE IF EXISTS geocoding;")
+            cur.execute("DROP TABLE IF EXISTS pg_nearest_city_geocoding;")
         conn.commit()
 
     return config
@@ -55,7 +55,7 @@ def test_db():
 
 def test_check_initialization_fresh_database(test_db):
     """Test initialization check on a fresh database with no tables."""
-    geocoder = ReverseGeocoder(test_db)
+    geocoder = NearestCity(test_db)
     with psycopg.connect(test_db.get_connection_string()) as conn:
         with conn.cursor() as cur:
             status = geocoder._check_initialization_status(cur)
@@ -67,13 +67,13 @@ def test_check_initialization_fresh_database(test_db):
 
 def test_check_initialization_incomplete_table(test_db):
     """Test initialization check with a table that's missing columns."""
-    geocoder = ReverseGeocoder(test_db)
+    geocoder = NearestCity(test_db)
 
     # Create table with missing columns
     with psycopg.connect(test_db.get_connection_string()) as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                CREATE TABLE geocoding (
+                CREATE TABLE pg_nearest_city_geocoding (
                     city varchar,
                     country varchar
                 );
@@ -89,7 +89,7 @@ def test_check_initialization_incomplete_table(test_db):
 
 def test_check_initialization_empty_table(test_db):
     """Test initialization check with properly structured but empty table."""
-    geocoder = ReverseGeocoder(test_db)
+    geocoder = NearestCity(test_db)
 
     with psycopg.connect(test_db.get_connection_string()) as conn:
         with conn.cursor() as cur:
@@ -105,14 +105,14 @@ def test_check_initialization_empty_table(test_db):
 
 def test_check_initialization_wrong_city_count(test_db):
     """Test initialization check with wrong number of cities."""
-    geocoder = ReverseGeocoder(test_db)
+    geocoder = NearestCity(test_db)
 
     with psycopg.connect(test_db.get_connection_string()) as conn:
         with conn.cursor() as cur:
             # Create table and insert just one test city
             geocoder._create_geocoding_table(cur)
             cur.execute("""
-                INSERT INTO geocoding (city, country, lat, lon)
+                INSERT INTO pg_nearest_city_geocoding (city, country, lat, lon)
                 VALUES ('Test City', 'Test Country', 0, 0);
             """)
             conn.commit()
@@ -127,7 +127,7 @@ def test_check_initialization_wrong_city_count(test_db):
 
 def test_check_initialization_missing_voronoi(test_db):
     """Test initialization check when Voronoi polygons are missing."""
-    geocoder = ReverseGeocoder(test_db)
+    geocoder = NearestCity(test_db)
 
     with psycopg.connect(test_db.get_connection_string()) as conn:
         with conn.cursor() as cur:
@@ -145,7 +145,7 @@ def test_check_initialization_missing_voronoi(test_db):
 
 def test_check_initialization_missing_index(test_db):
     """Test initialization check when spatial index is missing."""
-    geocoder = ReverseGeocoder(test_db)
+    geocoder = NearestCity(test_db)
 
     with psycopg.connect(test_db.get_connection_string()) as conn:
         with conn.cursor() as cur:
@@ -164,7 +164,7 @@ def test_check_initialization_missing_index(test_db):
 
 def test_check_initialization_complete(test_db):
     """Test initialization check with a properly initialized database."""
-    geocoder = ReverseGeocoder(test_db)
+    geocoder = NearestCity(test_db)
 
     # Perform full initialization
     geocoder.initialize()
@@ -181,7 +181,7 @@ def test_check_initialization_complete(test_db):
 def test_check_initialization_with_external_connection(test_db):
     """Test initialization check using an external connection."""
     with psycopg.connect(test_db.get_connection_string()) as conn:
-        geocoder = ReverseGeocoder(conn)
+        geocoder = NearestCity(conn)
 
         with conn.cursor() as cur:
             status = geocoder._check_initialization_status(cur)
