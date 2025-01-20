@@ -9,10 +9,10 @@ from pg_nearest_city.nearest_city import NearestCity, DbConfig
 def get_test_config():
     """Get database configuration from environment variables or defaults."""
     return DbConfig(
-        dbname=os.getenv("PGNEAREST_TEST_DB", "gisdb"),
-        user=os.getenv("PGNEAREST_TEST_USER", "postgres"),
-        password=os.getenv("PGNEAREST_TEST_PASSWORD", "postgres"),
-        host=os.getenv("PGNEAREST_TEST_HOST", "localhost"),
+        dbname=os.getenv("PGNEAREST_TEST_DB", "cities"),
+        user=os.getenv("PGNEAREST_TEST_USER", "cities"),
+        password=os.getenv("PGNEAREST_TEST_PASSWORD", "dummycipassword"),
+        host=os.getenv("PGNEAREST_TEST_HOST", "db"),
         port=int(os.getenv("PGNEAREST_TEST_PORT", "5432")),
     )
 
