@@ -71,8 +71,9 @@ class ReverseGeocoder:
             self._connection.close()
             self._connection = None
 
-    def __enter__(self) -> 'ReverseGeocoder':
-        """Enable context manager support."""
+    def __enter__(self) -> "ReverseGeocoder":
+        """Enable context manager support with automatic initialization."""
+        self.initialize()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
