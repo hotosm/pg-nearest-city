@@ -30,6 +30,8 @@ class Location:
 
 
 class ReverseGeocoder:
+    EXPECTED_CITY_COUNT = 153968
+
     def __init__(self, db: DbConfig | psycopg.Connection):
         """Initialize reverse geocoder with database configuration or existing connection.
 
@@ -50,18 +52,17 @@ class ReverseGeocoder:
         ) as voronoi_path:
             self.voronoi_file = voronoi_path
 
-
     def _get_connection(self) -> psycopg.Connection:
         """Get or create database connection."""
         if self.is_external_connection:
             return self.db
-            
+
         if self._connection is None or self._connection.closed:
             try:
                 self._connection = psycopg.connect(self.db.get_connection_string())
             except Exception as e:
                 raise RuntimeError(f"Database connection failed: {str(e)}")
-        
+
         return self._connection
 
     def close(self) -> None:
@@ -124,10 +125,25 @@ class ReverseGeocoder:
             raise RuntimeError(f"Reverse geocoding failed: {str(e)}")
 
     def initialize(self) -> None:
-        """Initialize the geocoding database with cities and Voronoi regions."""
+        """Initialize the geocoding database with validation checks.
+
+        Performs necessary initialization steps based on current database state.
+        Will attempt repair if the database is in an invalid state.
+        """
         try:
             conn = self._get_connection()
             with conn.cursor() as cur:
+                status = self._check_initialization_status(cur)
+
+                if status["is_initialized"]:
+                    print("Database already properly initialized.")
+                    return
+
+                if status["needs_repair"]:
+                    print(f"Database needs repair: {status['details']}")
+                    print("Reinitializing from scratch...")
+                    cur.execute("DROP TABLE IF EXISTS geocoding;")
+
                 print("Creating geocoding table...")
                 self._create_geocoding_table(cur)
 
@@ -142,17 +158,120 @@ class ReverseGeocoder:
 
                 conn.commit()
 
-                # Clean up the voronoi file after successful import
-                if self.voronoi_file.exists():
-                    self.voronoi_file.unlink()
-                    print("Cleaned up Voronoi file to save disk space")
+                # Verify initialization
+                final_status = self._check_initialization_status(cur)
+                if not final_status["is_initialized"]:
+                    raise RuntimeError(
+                        f"Initialization failed final validation: {final_status['details']}"
+                    )
 
-                print("Initialization complete!")
+                print("Initialization complete and verified!")
+
         except Exception as e:
             raise RuntimeError(f"Database initialization failed: {str(e)}")
 
-    def _import_cities(self, cur):
+    def _check_initialization_status(self, cur) -> dict:
+        """Check the status and integrity of the geocoding database.
 
+        Performs essential validation checks to ensure the database is properly initialized
+        and contains valid data.
+        """
+        # Check table existence
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'geocoding'
+            );
+        """)
+        table_exists = cur.fetchone()[0]
+
+        if not table_exists:
+            return {
+                "is_initialized": False,
+                "needs_repair": False,
+                "details": "Table does not exist",
+            }
+
+        # Check table structure
+        cur.execute("""
+            SELECT column_name, data_type 
+            FROM information_schema.columns 
+            WHERE table_name = 'geocoding'
+        """)
+        columns = {col: dtype for col, dtype in cur.fetchall()}
+        expected_columns = {
+            "city": "character varying",
+            "country": "character varying",
+            "lat": "numeric",
+            "lon": "numeric",
+            "geom": "geometry",
+            "voronoi": "geometry",
+        }
+
+        if not all(col in columns for col in expected_columns):
+            return {
+                "is_initialized": False,
+                "needs_repair": True,
+                "details": "Table structure is invalid",
+            }
+
+        # Check data completeness
+        cur.execute("""
+            SELECT 
+                COUNT(*) as total_cities,
+                COUNT(*) FILTER (WHERE voronoi IS NOT NULL) as cities_with_voronoi
+            FROM geocoding;
+        """)
+        counts = cur.fetchone()
+        total_cities, cities_with_voronoi = counts
+
+        if total_cities == 0:
+            return {
+                "is_initialized": False,
+                "needs_repair": False,
+                "details": "No city data present",
+            }
+
+        if total_cities != self.EXPECTED_CITY_COUNT:
+            return {
+                "is_initialized": False,
+                "needs_repair": True,
+                "details": f"City count mismatch: expected {self.EXPECTED_CITY_COUNT}, found {total_cities}",
+            }
+
+        if cities_with_voronoi != total_cities:
+            return {
+                "is_initialized": False,
+                "needs_repair": True,
+                "details": "Missing Voronoi polygons",
+            }
+
+        # Check spatial index
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM pg_indexes 
+                WHERE tablename = 'geocoding' 
+                AND indexname = 'geocoding_voronoi_idx'
+            );
+        """)
+
+        has_index = cur.fetchone()[0]
+
+        if not has_index:
+            return {
+                "is_initialized": False,
+                "needs_repair": True,
+                "details": "Missing spatial index",
+            }
+
+        # Everything looks good
+        return {
+            "is_initialized": True,
+            "needs_repair": False,
+            "details": "Database properly initialized",
+        }
+
+    def _import_cities(self, cur):
         if not self.cities_file.exists():
             raise FileNotFoundError(f"Cities file not found: {self.cities_file}")
 
