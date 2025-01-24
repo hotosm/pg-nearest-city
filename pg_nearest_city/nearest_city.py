@@ -29,7 +29,9 @@ class Location:
     lon: float
 
 
-class ReverseGeocoder:
+class NearestCity:
+    EXPECTED_CITY_COUNT = 153968
+
     def __init__(self, db: DbConfig | psycopg.Connection):
         """Initialize reverse geocoder with database configuration or existing connection.
 
@@ -50,18 +52,17 @@ class ReverseGeocoder:
         ) as voronoi_path:
             self.voronoi_file = voronoi_path
 
-
     def _get_connection(self) -> psycopg.Connection:
         """Get or create database connection."""
         if self.is_external_connection:
             return self.db
-            
+
         if self._connection is None or self._connection.closed:
             try:
                 self._connection = psycopg.connect(self.db.get_connection_string())
             except Exception as e:
                 raise RuntimeError(f"Database connection failed: {str(e)}")
-        
+
         return self._connection
 
     def close(self) -> None:
@@ -70,15 +71,16 @@ class ReverseGeocoder:
             self._connection.close()
             self._connection = None
 
-    def __enter__(self) -> 'ReverseGeocoder':
-        """Enable context manager support."""
+    def __enter__(self) -> "NearestCity":
+        """Enable context manager support with automatic initialization."""
+        self.initialize()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Cleanup when used as context manager."""
         self.close()
 
-    def reverse_geocode(self, lat: float, lon: float) -> Optional[Location]:
+    def query(self, lat: float, lon: float) -> Optional[Location]:
         """Find the nearest city to the given coordinates using Voronoi regions.
 
         Args:
@@ -100,7 +102,7 @@ class ReverseGeocoder:
 
         query = sql.SQL("""
             SELECT city, country, lat, lon 
-            FROM geocoding 
+            FROM pg_nearest_city_geocoding 
             WHERE ST_Contains(voronoi, ST_SetSRID(ST_MakePoint({}, {}), 4326))
             LIMIT 1
         """).format(sql.Literal(lon), sql.Literal(lat))
@@ -124,10 +126,25 @@ class ReverseGeocoder:
             raise RuntimeError(f"Reverse geocoding failed: {str(e)}")
 
     def initialize(self) -> None:
-        """Initialize the geocoding database with cities and Voronoi regions."""
+        """Initialize the geocoding database with validation checks.
+
+        Performs necessary initialization steps based on current database state.
+        Will attempt repair if the database is in an invalid state.
+        """
         try:
             conn = self._get_connection()
             with conn.cursor() as cur:
+                status = self._check_initialization_status(cur)
+
+                if status["is_initialized"]:
+                    print("Database already properly initialized.")
+                    return
+
+                if status["needs_repair"]:
+                    print(f"Database needs repair: {status['details']}")
+                    print("Reinitializing from scratch...")
+                    cur.execute("DROP TABLE IF EXISTS pg_nearest_city_geocoding;")
+
                 print("Creating geocoding table...")
                 self._create_geocoding_table(cur)
 
@@ -142,22 +159,125 @@ class ReverseGeocoder:
 
                 conn.commit()
 
-                # Clean up the voronoi file after successful import
-                if self.voronoi_file.exists():
-                    self.voronoi_file.unlink()
-                    print("Cleaned up Voronoi file to save disk space")
+                # Verify initialization
+                final_status = self._check_initialization_status(cur)
+                if not final_status["is_initialized"]:
+                    raise RuntimeError(
+                        f"Initialization failed final validation: {final_status['details']}"
+                    )
 
-                print("Initialization complete!")
+                print("Initialization complete and verified!")
+
         except Exception as e:
             raise RuntimeError(f"Database initialization failed: {str(e)}")
 
-    def _import_cities(self, cur):
+    def _check_initialization_status(self, cur) -> dict:
+        """Check the status and integrity of the geocoding database.
 
+        Performs essential validation checks to ensure the database is properly initialized
+        and contains valid data.
+        """
+        # Check table existence
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'pg_nearest_city_geocoding'
+            );
+        """)
+        table_exists = cur.fetchone()[0]
+
+        if not table_exists:
+            return {
+                "is_initialized": False,
+                "needs_repair": False,
+                "details": "Table does not exist",
+            }
+
+        # Check table structure
+        cur.execute("""
+            SELECT column_name, data_type 
+            FROM information_schema.columns 
+            WHERE table_name = 'pg_nearest_city_geocoding'
+        """)
+        columns = {col: dtype for col, dtype in cur.fetchall()}
+        expected_columns = {
+            "city": "character varying",
+            "country": "character varying",
+            "lat": "numeric",
+            "lon": "numeric",
+            "geom": "geometry",
+            "voronoi": "geometry",
+        }
+
+        if not all(col in columns for col in expected_columns):
+            return {
+                "is_initialized": False,
+                "needs_repair": True,
+                "details": "Table structure is invalid",
+            }
+
+        # Check data completeness
+        cur.execute("""
+            SELECT 
+                COUNT(*) as total_cities,
+                COUNT(*) FILTER (WHERE voronoi IS NOT NULL) as cities_with_voronoi
+            FROM pg_nearest_city_geocoding;
+        """)
+        counts = cur.fetchone()
+        total_cities, cities_with_voronoi = counts
+
+        if total_cities == 0:
+            return {
+                "is_initialized": False,
+                "needs_repair": False,
+                "details": "No city data present",
+            }
+
+        if total_cities != self.EXPECTED_CITY_COUNT:
+            return {
+                "is_initialized": False,
+                "needs_repair": True,
+                "details": f"City count mismatch: expected {self.EXPECTED_CITY_COUNT}, found {total_cities}",
+            }
+
+        if cities_with_voronoi != total_cities:
+            return {
+                "is_initialized": False,
+                "needs_repair": True,
+                "details": "Missing Voronoi polygons",
+            }
+
+        # Check spatial index
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM pg_indexes 
+                WHERE tablename = 'pg_nearest_city_geocoding' 
+                AND indexname = 'geocoding_voronoi_idx'
+            );
+        """)
+
+        has_index = cur.fetchone()[0]
+
+        if not has_index:
+            return {
+                "is_initialized": False,
+                "needs_repair": True,
+                "details": "Missing spatial index",
+            }
+
+        # Everything looks good
+        return {
+            "is_initialized": True,
+            "needs_repair": False,
+            "details": "Database properly initialized",
+        }
+
+    def _import_cities(self, cur):
         if not self.cities_file.exists():
             raise FileNotFoundError(f"Cities file not found: {self.cities_file}")
 
         """Import city data using COPY protocol."""
-        with cur.copy("COPY geocoding(city, country, lat, lon) FROM STDIN") as copy:
+        with cur.copy("COPY pg_nearest_city_geocoding(city, country, lat, lon) FROM STDIN") as copy:
             with gzip.open(self.cities_file, "r") as f:
                 copied_bytes = 0
                 while data := f.read(8192):
@@ -168,7 +288,7 @@ class ReverseGeocoder:
     def _create_geocoding_table(self, cur):
         """Create the main table"""
         cur.execute("""
-            CREATE TABLE geocoding (
+            CREATE TABLE pg_nearest_city_geocoding (
                 city varchar,
                 country varchar,
                 lat decimal,
@@ -201,7 +321,7 @@ class ReverseGeocoder:
 
         # Update main table with Voronoi geometries
         cur.execute("""
-            UPDATE geocoding g
+            UPDATE pg_nearest_city_geocoding g
             SET voronoi = ST_GeomFromWKB(v.wkb, 4326)
             FROM voronoi_import v
             WHERE g.city = v.city
@@ -215,6 +335,6 @@ class ReverseGeocoder:
         """Create a spatial index on the Voronoi polygons for efficient queries."""
         cur.execute("""
             CREATE INDEX geocoding_voronoi_idx 
-            ON geocoding 
+            ON pg_nearest_city_geocoding 
             USING GIST (voronoi);
         """)
