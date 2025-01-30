@@ -50,11 +50,11 @@ web frameworks (APIs) that have an existing PostGIS connection to utilise.
 - The package [here](https://github.com/richardpenman/reverse_geocode) is an excellent
   revamp of the package above, an likely the best choice in many scenarios.
 
-The K-D tree implementation in Python is performant (see [benchmarks]()) and an excellent
-choice for scripts.
+The K-D tree implementation in Python is performant (see [benchmarks](#benchmarks))
+and an excellent choice for scripts.
 
 However, it does leave a large memory footprint of approximately 160Mb to load the
-K-D tree in memory (see [benchmarks]()).
+K-D tree in memory (see [benchmarks](#benchmarks)).
 
 Once computed, the K-D tree remains in memory! This is an unacceptable compromise
 for a web server, for such a small amount of functionality, particularly if the
@@ -62,7 +62,15 @@ web server is run via a container orchestrator as replicas with minimal memory.
 
 As we already have a Postgres database running alongside our webserver, an approach
 to simply query via pre-loaded data via PostGIS is much more memory efficient (~2Mb)
-and has an acceptable performance penalty (see [benchmarks]()).
+and has an acceptable performance penalty (see [benchmarks](#benchmarks)).
+
+> [!NOTE]
+> We don't discuss web based geocoding services here, such as Nominatim, as simple
+> offline reverse-geocoding has two purposes:
+>
+> - Reduced latency, when very precise locations are not required.
+> - Reduced load on free services such as Nominatim (particularly when running
+> in automated tests frequently).
 
 ## Priorities
 
@@ -79,7 +87,7 @@ and has an acceptable performance penalty (see [benchmarks]()).
 
 ## Benchmarks
 
--
+- todo
 
 ## Testing
 
