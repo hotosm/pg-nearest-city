@@ -1,32 +1,14 @@
 import psycopg
 import gzip
 
-from dataclasses import dataclass
 from typing import Optional
 import importlib.resources
 
 
 from psycopg import sql
+from base_nearest_city import DbConfig
+from pg_nearest_city.base_nearest_city import BaseNearestCity
 
-
-@dataclass
-class DbConfig:
-    dbname: str
-    user: str
-    password: str
-    host: str = "localhost"
-    port: int = 5432
-
-    def get_connection_string(self) -> str:
-        return f"dbname={self.dbname} user={self.user} password={self.password} host={self.host} port={self.port}"
-
-
-@dataclass
-class Location:
-    city: str
-    country: str
-    lat: float
-    lon: float
 
 
 class NearestCity:
@@ -94,11 +76,6 @@ class NearestCity:
             ValueError: If coordinates are out of valid ranges
             RuntimeError: If database query fails
         """
-        # Validate coordinate ranges
-        if not -90 <= lat <= 90:
-            raise ValueError(f"Latitude {lat} is outside valid range [-90, 90]")
-        if not -180 <= lon <= 180:
-            raise ValueError(f"Longitude {lon} is outside valid range [-180, 180]")
 
         query = sql.SQL("""
             SELECT city, country, lat, lon 
@@ -178,12 +155,7 @@ class NearestCity:
         and contains valid data.
         """
         # Check table existence
-        cur.execute("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_name = 'pg_nearest_city_geocoding'
-            );
-        """)
+        cur.execute(BaseNearestCity._get_table_existance_query())
         table_exists = cur.fetchone()[0]
 
         if not table_exists:
@@ -194,11 +166,7 @@ class NearestCity:
             }
 
         # Check table structure
-        cur.execute("""
-            SELECT column_name, data_type 
-            FROM information_schema.columns 
-            WHERE table_name = 'pg_nearest_city_geocoding'
-        """)
+        cur.execute(BaseNearestCity._get_table_structure_query())
         columns = {col: dtype for col, dtype in cur.fetchall()}
         expected_columns = {
             "city": "character varying",
@@ -217,12 +185,8 @@ class NearestCity:
             }
 
         # Check data completeness
-        cur.execute("""
-            SELECT 
-                COUNT(*) as total_cities,
-                COUNT(*) FILTER (WHERE voronoi IS NOT NULL) as cities_with_voronoi
-            FROM pg_nearest_city_geocoding;
-        """)
+        cur.execute(BaseNearestCity._get_data_completeness_query())
+
         counts = cur.fetchone()
         total_cities, cities_with_voronoi = counts
 
@@ -248,14 +212,7 @@ class NearestCity:
             }
 
         # Check spatial index
-        cur.execute("""
-            SELECT EXISTS (
-                SELECT FROM pg_indexes 
-                WHERE tablename = 'pg_nearest_city_geocoding' 
-                AND indexname = 'geocoding_voronoi_idx'
-            );
-        """)
-
+        cur.execute(BaseNearestCity._get_spatial_index_check_query)
         has_index = cur.fetchone()[0]
 
         if not has_index:
