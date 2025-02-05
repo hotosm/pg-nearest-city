@@ -9,6 +9,7 @@ from psycopg import sql
 from base_nearest_city import DbConfig
 from pg_nearest_city.base_nearest_city import BaseNearestCity
 
+
 class NearestCity:
     EXPECTED_CITY_COUNT = 153968
 
@@ -228,7 +229,9 @@ class NearestCity:
             raise FileNotFoundError(f"Cities file not found: {self.cities_file}")
 
         """Import city data using COPY protocol."""
-        with cur.copy("COPY pg_nearest_city_geocoding(city, country, lat, lon) FROM STDIN") as copy:
+        with cur.copy(
+            "COPY pg_nearest_city_geocoding(city, country, lat, lon) FROM STDIN"
+        ) as copy:
             with gzip.open(self.cities_file, "r") as f:
                 copied_bytes = 0
                 while data := f.read(8192):

@@ -3,6 +3,7 @@ from typing import Optional
 
 from psycopg import sql
 
+
 @dataclass
 class DbConfig:
     dbname: str
@@ -23,15 +24,49 @@ class Location:
     lon: float
 
 
-class BaseNearestCity:
+@dataclass
+class InitializationStatus:
+    def __init__(self):
+        self.has_table: bool = False
+        self.has_valid_structure: bool = False
+        self.has_data: bool = False
+        self.has_complete_voronoi: bool = False
+        self.has_spatial_index: bool = False
 
+    @property
+    def is_fully_initialized(self) -> bool:
+        """Check if the database is fully initialized and ready for use."""
+        return (
+            self.has_table
+            and self.has_valid_structure
+            and self.has_data
+            and self.has_complete_voronoi
+            and self.has_spatial_index
+        )
+
+    def get_missing_components(self) -> list[str]:
+            """Return a list of components that are not properly initialized."""
+            missing = []
+            if not self.has_table:
+                missing.append("database table")
+            if not self.has_valid_structure:
+                missing.append("valid table structure")
+            if not self.has_data:
+                missing.append("city data")
+            if not self.has_complete_voronoi:
+                missing.append("complete Voronoi polygons")
+            if not self.has_spatial_index:
+                missing.append("spatial index")
+            return missing
+
+
+class BaseNearestCity:
     @staticmethod
     def validate_coordinates(lon: float, lat: float) -> Optional[Location]:
         if not -90 <= lat <= 90:
             raise ValueError(f"Latitude {lat} is outside valid range [-90, 90]")
         if not -180 <= lon <= 180:
             raise ValueError(f"Longitude {lon} is outside valid range [-180, 180]")
-
 
     @staticmethod
     def _get_table_existance_query() -> sql.SQL:
@@ -77,5 +112,3 @@ class BaseNearestCity:
             WHERE ST_Contains(voronoi, ST_SetSRID(ST_MakePoint({}, {}), 4326))
             LIMIT 1
         """).format(sql.Literal(lon), sql.Literal(lat))
-
-
