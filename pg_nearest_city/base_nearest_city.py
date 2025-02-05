@@ -27,7 +27,6 @@ class BaseNearestCity:
 
     @staticmethod
     def validate_coordinates(lon: float, lat: float) -> Optional[Location]:
-        # Validate coordinate ranges
         if not -90 <= lat <= 90:
             raise ValueError(f"Latitude {lat} is outside valid range [-90, 90]")
         if not -180 <= lon <= 180:
@@ -69,3 +68,14 @@ class BaseNearestCity:
                 AND indexname = 'geocoding_voronoi_idx'
             );
         """)
+
+    @staticmethod
+    def _get_reverse_geocoding_query(lon: float, lat: float):
+        return sql.SQL("""
+            SELECT city, country, lat, lon 
+            FROM pg_nearest_city_geocoding 
+            WHERE ST_Contains(voronoi, ST_SetSRID(ST_MakePoint({}, {}), 4326))
+            LIMIT 1
+        """).format(sql.Literal(lon), sql.Literal(lat))
+
+
