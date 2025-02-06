@@ -144,7 +144,7 @@ CMD ["bash"]
 
 
 
-FROM runtime as dist
+FROM runtime AS dist
 # Bundle the built wheel for distribution
 COPY --from=build-wheel \
     "/build/dist/*-py3-none-any.whl" /build/
