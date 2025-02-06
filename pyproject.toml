@@ -20,7 +20,11 @@ classifiers = [
 ]
 dependencies = [
     "psycopg>=3.1",
+    "unasync>=0.6.0",
 ]
+
+[project.scripts]
+build-sync = "build_sync:build_sync"
 
 [dependency-groups]
 test = [
@@ -64,6 +68,9 @@ convention = "google"
 addopts = "-ra -q"
 testpaths = [
     "tests",
+]
+markers = [
+    "sync",
 ]
 
 [tool.commitizen]
