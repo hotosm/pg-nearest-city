@@ -19,7 +19,6 @@ def build_sync():
         # Test-specific patterns
         "import pytest_asyncio": "",
         "pytest_asyncio": "pytest",
-        "asyncio": "sync",
     }
     
     try:

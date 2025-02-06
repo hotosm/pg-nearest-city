@@ -69,9 +69,6 @@ addopts = "-ra -q"
 testpaths = [
     "tests",
 ]
-markers = [
-    "sync",
-]
 
 [tool.commitizen]
 name = "cz_conventional_commits"

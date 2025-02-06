@@ -23,6 +23,3 @@ dist
 # Docs
 site
 .cache
-
-pg_nearest_city/nearest_city.py
-tests/test_nearest_city.py
