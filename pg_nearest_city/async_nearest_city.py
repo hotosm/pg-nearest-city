@@ -161,6 +161,9 @@ class AsyncNearestCity:
             "voronoi": "geometry",
         }
         status.has_valid_structure = all(col in columns for col in expected_columns)
+        # If table doesn't have valid structure, we can't check other properties
+        if not status.has_valid_structure:
+            return status
         
         # Check data completeness
         await cur.execute(BaseNearestCity._get_data_completeness_query())
