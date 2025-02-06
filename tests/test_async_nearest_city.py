@@ -20,7 +20,7 @@ def get_test_config():
         port=int(os.getenv("PGNEAREST_TEST_PORT", "5432")),
     )
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="function")
 async def test_db():
     """Provide a clean database connection for each test."""
     config = get_test_config()
@@ -37,11 +37,21 @@ async def test_db():
     
     await conn.close()
 
+@pytest.mark.asyncio(loop_scope="function")
+async def test_full_initialization_connect():
+    """Test completet database initialization and basic query through connect method."""
+    async with AsyncNearestCity.connect(get_test_config()) as geocoder:
+        location = await geocoder.query(40.7128, -74.0060)
+
+    assert location is not None
+    assert location.city == "New York City"
+    assert isinstance(location, Location)
+
 @pytest.mark.asyncio
 async def test_full_initialization(test_db):
     """Test complete database initialization and basic query."""
     geocoder = AsyncNearestCity(test_db)
-    await geocoder.Initialize()
+    await geocoder.initialize()
 
     # Test with New York coordinates
     location = await geocoder.query(40.7128, -74.0060)
@@ -133,7 +143,7 @@ async def test_check_initialization_missing_index(test_db):
 async def test_check_initialization_complete(test_db):
     """Test initialization check with a properly initialized database."""
     geocoder = AsyncNearestCity(test_db)
-    await geocoder.Initialize()
+    await geocoder.initialize()
 
     async with test_db.cursor() as cur:
         status = await geocoder._check_initialization_status(cur)
@@ -147,7 +157,7 @@ async def test_check_initialization_complete(test_db):
 async def test_invalid_coordinates(test_db):
     """Test that invalid coordinates are properly handled."""
     geocoder = AsyncNearestCity(test_db)
-    await geocoder.Initialize()
+    await geocoder.initialize()
     
     with pytest.raises(ValueError):
         await geocoder.query(91, 0)  # Invalid latitude

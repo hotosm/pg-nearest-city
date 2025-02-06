@@ -1,12 +1,14 @@
 import importlib.resources
+from pg_nearest_city import base_nearest_city
 import psycopg
 import gzip
 from psycopg import AsyncCursor
 
-from typing import Optional
+from typing import Optional, Union
 from pg_nearest_city.base_nearest_city import BaseNearestCity
 from pg_nearest_city.base_nearest_city import Location
 from pg_nearest_city.base_nearest_city import InitializationStatus
+from contextlib import asynccontextmanager
 
 import logging
 from typing import Optional
@@ -14,17 +16,43 @@ from typing import Optional
 logger = logging.getLogger("pg_nearest_city")
 
 class AsyncNearestCity:
-    def __init__(self, db: psycopg.AsyncConnection, logger: Optional[logging.Logger] = None):
+    @classmethod
+    @asynccontextmanager
+    async def connect(cls, db: psycopg.AsyncConnection | base_nearest_city.DbConfig):
+        """Create a managed NearestCity instance with automatic initialization and cleanup.
+        
+        Args:
+            db: Either a DbConfig for a new connection or an existing psycopg Connection
+        """
+        is_external_connection = isinstance(db, psycopg.AsyncConnection)
+
+        conn: psycopg.AsyncConnection
+
+        if is_external_connection:
+            conn = db
+        else:
+            conn = await psycopg.AsyncConnection.connect(db.get_connection_string())
+
+        geocoder = cls(conn)
+        
+        try:
+            await geocoder.initialize()
+            yield geocoder
+        finally:
+            if not is_external_connection:
+                await conn.close()
+
+
+    def __init__(self, connection: psycopg.AsyncConnection, logger: Optional[logging.Logger] = None):
         """Initialize reverse geocoder with an existing AsyncConnection
         
         Args:
             db: An existing psycopg AsyncConnection
             logger: Optional custom logger. If not provided, uses package logger
         """
-        self.db = db
         # Allow users to provide their own logger while having a sensible default
         self._logger = logger or logging.getLogger("pg_nearest_city")
-        self._connection = None
+        self.connection = connection
 
         with importlib.resources.path(
             "pg_nearest_city.data", "cities_1000_simple.txt.gz"
@@ -35,11 +63,10 @@ class AsyncNearestCity:
         ) as voronoi_path:
             self.voronoi_file = voronoi_path
 
-    async def Initialize(self) -> None:
+    async def initialize(self) -> None:
         """Initialize the geocoding database with validation checks."""
         try:
-            conn = self._get_connection()
-            async with conn.cursor() as cur:
+            async with self.connection.cursor() as cur:
                 self._logger.info("Starting database initialization check")
                 status = await self._check_initialization_status(cur)
                 
@@ -68,7 +95,7 @@ class AsyncNearestCity:
                 self._logger.info("Creating spatial index")
                 await self._create_spatial_index(cur)
                 
-                await conn.commit()
+                await self.connection.commit()
                 
                 self._logger.debug("Verifying final initialization state")
                 final_status = await self._check_initialization_status(cur)
@@ -87,10 +114,6 @@ class AsyncNearestCity:
         except Exception as e:
             self._logger.error("Database initialization failed: %s", str(e))
             raise RuntimeError(f"Database initialization failed: {str(e)}")
-
-    def _get_connection(self) -> psycopg.AsyncConnection:
-        """Get or create database connection."""
-        return self.db
 
     async def query(self, lat: float, lon: float) -> Optional[Location]:
         """Find the nearest city to the given coordinates using Voronoi regions.
@@ -111,8 +134,7 @@ class AsyncNearestCity:
         BaseNearestCity.validate_coordinates(lon, lat)
 
         try:
-            conn = self._get_connection()
-            async with conn.cursor() as cur:
+            async with self.connection.cursor() as cur:
                 await cur.execute(
                     BaseNearestCity._get_reverse_geocoding_query(lon, lat)
                 )
