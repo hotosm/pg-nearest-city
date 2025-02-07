@@ -2,48 +2,48 @@ import importlib.resources
 from pg_nearest_city import base_nearest_city
 import psycopg
 import gzip
-from psycopg import Cursor
+from psycopg import AsyncCursor
 
 from typing import Optional, Union
 from pg_nearest_city.base_nearest_city import BaseNearestCity
 from pg_nearest_city.base_nearest_city import Location
 from pg_nearest_city.base_nearest_city import InitializationStatus
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 
 import logging
 from typing import Optional
 
 logger = logging.getLogger("pg_nearest_city")
 
-class NearestCity:
+class AsyncNearestCity:
     @classmethod
-    @contextmanager
-    def connect(cls, db: psycopg.Connection | base_nearest_city.DbConfig):
+    @asynccontextmanager
+    async def connect(cls, db: psycopg.AsyncConnection | base_nearest_city.DbConfig):
         """Create a managed NearestCity instance with automatic initialization and cleanup.
         
         Args:
             db: Either a DbConfig for a new connection or an existing psycopg Connection
         """
-        is_external_connection = isinstance(db, psycopg.Connection)
+        is_external_connection = isinstance(db, psycopg.AsyncConnection)
 
-        conn: psycopg.Connection
+        conn: psycopg.AsyncConnection
 
         if is_external_connection:
             conn = db
         else:
-            conn = psycopg.Connection.connect(db.get_connection_string())
+            conn = await psycopg.AsyncConnection.connect(db.get_connection_string())
 
         geocoder = cls(conn)
         
         try:
-            geocoder.initialize()
+            await geocoder.initialize()
             yield geocoder
         finally:
             if not is_external_connection:
-                conn.close()
+                await conn.close()
 
 
-    def __init__(self, connection: psycopg.Connection, logger: Optional[logging.Logger] = None):
+    def __init__(self, connection: psycopg.AsyncConnection, logger: Optional[logging.Logger] = None):
         """Initialize reverse geocoder with an existing AsyncConnection
         
         Args:
@@ -63,12 +63,12 @@ class NearestCity:
         ) as voronoi_path:
             self.voronoi_file = voronoi_path
 
-    def initialize(self) -> None:
+    async def initialize(self) -> None:
         """Initialize the geocoding database with validation checks."""
         try:
-            with self.connection.cursor() as cur:
+            async with self.connection.cursor() as cur:
                 self._logger.info("Starting database initialization check")
-                status = self._check_initialization_status(cur)
+                status = await self._check_initialization_status(cur)
                 
                 if status.is_fully_initialized:
                     self._logger.info("Database already properly initialized")
@@ -81,24 +81,24 @@ class NearestCity:
                         ", ".join(missing)
                     )
                     self._logger.info("Reinitializing from scratch")
-                    cur.execute("DROP TABLE IF EXISTS pg_nearest_city_geocoding;")
+                    await cur.execute("DROP TABLE IF EXISTS pg_nearest_city_geocoding;")
                 
                 self._logger.info("Creating geocoding table")
-                self._create_geocoding_table(cur)
+                await self._create_geocoding_table(cur)
                 
                 self._logger.info("Importing city data")
-                self._import_cities(cur)
+                await self._import_cities(cur)
                 
                 self._logger.info("Processing Voronoi polygons")
-                self._import_voronoi_polygons(cur)
+                await self._import_voronoi_polygons(cur)
                 
                 self._logger.info("Creating spatial index")
-                self._create_spatial_index(cur)
+                await self._create_spatial_index(cur)
                 
-                self.connection.commit()
+                await self.connection.commit()
                 
                 self._logger.debug("Verifying final initialization state")
-                final_status = self._check_initialization_status(cur)
+                final_status = await self._check_initialization_status(cur)
                 if not final_status.is_fully_initialized:
                     missing = final_status.get_missing_components()
                     self._logger.error(
@@ -115,7 +115,7 @@ class NearestCity:
             self._logger.error("Database initialization failed: %s", str(e))
             raise RuntimeError(f"Database initialization failed: {str(e)}")
 
-    def query(self, lat: float, lon: float) -> Optional[Location]:
+    async def query(self, lat: float, lon: float) -> Optional[Location]:
         """Find the nearest city to the given coordinates using Voronoi regions.
 
         Args:
@@ -134,11 +134,11 @@ class NearestCity:
         BaseNearestCity.validate_coordinates(lon, lat)
 
         try:
-            with self.connection.cursor() as cur:
-                cur.execute(
+            async with self.connection.cursor() as cur:
+                await cur.execute(
                     BaseNearestCity._get_reverse_geocoding_query(lon, lat)
                 )
-                result = cur.fetchone()
+                result = await cur.fetchone()
 
                 if not result:
                     return None
@@ -154,7 +154,7 @@ class NearestCity:
             raise RuntimeError(f"Reverse geocoding failed: {str(e)}")
 
 
-    def _check_initialization_status(self, cur: psycopg.Cursor) -> InitializationStatus:
+    async def _check_initialization_status(self, cur: psycopg.AsyncCursor) -> InitializationStatus:
         """Check the status and integrity of the geocoding database.
 
         Performs essential validation checks to ensure the database is properly initialized
@@ -163,8 +163,8 @@ class NearestCity:
         status = InitializationStatus()
         
         # Check table existence
-        cur.execute(BaseNearestCity._get_table_existance_query())
-        table_exists = cur.fetchone()
+        await cur.execute(BaseNearestCity._get_table_existance_query())
+        table_exists = await cur.fetchone()
         status.has_table = bool(table_exists and table_exists[0])
         
         # If table doesn't exist, we can't check other properties
@@ -172,8 +172,8 @@ class NearestCity:
             return status
             
         # Check table structure
-        cur.execute(BaseNearestCity._get_table_structure_query())
-        columns = {col: dtype for col, dtype in cur.fetchall()}
+        await cur.execute(BaseNearestCity._get_table_structure_query())
+        columns = {col: dtype for col, dtype in await cur.fetchall()}
         expected_columns = {
             "city": "character varying",
             "country": "character varying",
@@ -188,38 +188,38 @@ class NearestCity:
             return status
         
         # Check data completeness
-        cur.execute(BaseNearestCity._get_data_completeness_query())
-        counts = cur.fetchone()
+        await cur.execute(BaseNearestCity._get_data_completeness_query())
+        counts = await cur.fetchone()
         total_cities, cities_with_voronoi = counts
         
         status.has_data = total_cities > 0
         status.has_complete_voronoi = cities_with_voronoi == total_cities
         
         # Check spatial index
-        cur.execute(BaseNearestCity._get_spatial_index_check_query())
-        has_index = cur.fetchone()
+        await cur.execute(BaseNearestCity._get_spatial_index_check_query())
+        has_index = await cur.fetchone()
         status.has_spatial_index = bool(has_index and has_index[0])
         
         return status
 
-    def _import_cities(self, cur: Cursor):
+    async def _import_cities(self, cur: AsyncCursor):
         if not self.cities_file.exists():
             raise FileNotFoundError(f"Cities file not found: {self.cities_file}")
 
         """Import city data using COPY protocol."""
-        with cur.copy(
+        async with cur.copy(
             "COPY pg_nearest_city_geocoding(city, country, lat, lon) FROM STDIN"
         ) as copy:
             with gzip.open(self.cities_file, "r") as f:
                 copied_bytes = 0
                 while data := f.read(8192):
-                    copy.write(data)
+                    await copy.write(data)
                     copied_bytes += len(data)
                 self._logger.info(f"Imported {copied_bytes:,} bytes of city data")
 
-    def _create_geocoding_table(self, cur: Cursor):
+    async def _create_geocoding_table(self, cur: AsyncCursor):
         """Create the main table"""
-        cur.execute("""
+        await cur.execute("""
             CREATE TABLE pg_nearest_city_geocoding (
                 city varchar,
                 country varchar,
@@ -230,14 +230,14 @@ class NearestCity:
             );
         """)
 
-    def _import_voronoi_polygons(self, cur: Cursor):
+    async def _import_voronoi_polygons(self, cur: AsyncCursor):
         """Import and integrate Voronoi polygons into the main table."""
 
         if not self.voronoi_file.exists():
             raise FileNotFoundError(f"Voronoi file not found: {self.voronoi_file}")
 
         # First create temporary table for the import
-        cur.execute("""
+        await cur.execute("""
             CREATE TEMP TABLE voronoi_import (
                 city text,
                 country text,
@@ -246,15 +246,15 @@ class NearestCity:
         """)
 
         # Import the binary WKB data
-        with cur.copy(
+        async with cur.copy(
             "COPY voronoi_import (city, country, wkb) FROM STDIN"
         ) as copy:
             with gzip.open(self.voronoi_file, "rb") as f:
                 while data := f.read(8192):
-                    copy.write(data)
+                    await copy.write(data)
 
         # Update main table with Voronoi geometries
-        cur.execute("""
+        await cur.execute("""
             UPDATE pg_nearest_city_geocoding g
             SET voronoi = ST_GeomFromWKB(v.wkb, 4326)
             FROM voronoi_import v
@@ -263,11 +263,11 @@ class NearestCity:
         """)
 
         # Clean up temporary table
-        cur.execute("DROP TABLE voronoi_import;")
+        await cur.execute("DROP TABLE voronoi_import;")
 
-    def _create_spatial_index(self, cur: Cursor):
+    async def _create_spatial_index(self, cur: AsyncCursor):
         """Create a spatial index on the Voronoi polygons for efficient queries."""
-        cur.execute("""
+        await cur.execute("""
             CREATE INDEX geocoding_voronoi_idx 
             ON pg_nearest_city_geocoding 
             USING GIST (voronoi);
