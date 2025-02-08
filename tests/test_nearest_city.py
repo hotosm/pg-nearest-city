@@ -33,7 +33,7 @@ def test_db():
 
 def test_full_initialization_connect():
     """Test completet database initialization and basic query through connect method."""
-    with NearestCity.connect(get_test_config()) as geocoder:
+    with NearestCity.connect() as geocoder:
         location = geocoder.query(40.7128, -74.0060)
 
     assert location is not None

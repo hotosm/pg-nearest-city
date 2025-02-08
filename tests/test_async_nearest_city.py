@@ -33,7 +33,7 @@ async def test_db():
 
 async def test_full_initialization_connect():
     """Test completet database initialization and basic query through connect method."""
-    async with AsyncNearestCity.connect(get_test_config()) as geocoder:
+    async with AsyncNearestCity.connect() as geocoder:
         location = await geocoder.query(40.7128, -74.0060)
 
     assert location is not None

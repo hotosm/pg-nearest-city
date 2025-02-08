@@ -12,6 +12,7 @@ from psycopg import AsyncCursor
 from pg_nearest_city import base_nearest_city
 from pg_nearest_city.base_nearest_city import (
     BaseNearestCity,
+    DbConfig,
     InitializationStatus,
     Location,
 )
@@ -24,20 +25,31 @@ class AsyncNearestCity:
 
     @classmethod
     @asynccontextmanager
-    async def connect(cls, db: psycopg.AsyncConnection | base_nearest_city.DbConfig):
+    async def connect(
+        cls,
+        db: Optional[psycopg.AsyncConnection | base_nearest_city.DbConfig] = None,
+    ):
         """Managed NearestCity instance with automatic initialization and cleanup.
 
         Args:
-            db: Either a DbConfig for a new connection or an existing psycopg Connection
+            db: Either a DbConfig for a new connection or an existing
+                psycopg Connection. If neither are passed, attempts to extract
+                variables from system environment, else uses defaults.
         """
         is_external_connection = isinstance(db, psycopg.AsyncConnection)
+        is_db_config = isinstance(db, base_nearest_city.DbConfig)
 
         conn: psycopg.AsyncConnection
 
         if is_external_connection:
             conn = db
-        else:
+        elif is_db_config:
             conn = await psycopg.AsyncConnection.connect(db.get_connection_string())
+        else:
+            # Fallback to env var extraction, or defaults for testing
+            conn = await psycopg.AsyncConnection.connect(
+                DbConfig().get_connection_string()
+            )
 
         geocoder = cls(conn)
 
