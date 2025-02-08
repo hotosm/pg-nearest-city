@@ -4,8 +4,7 @@ import psycopg
 import pytest
 import pytest_asyncio
 
-from pg_nearest_city.async_nearest_city import AsyncNearestCity
-from pg_nearest_city.base_nearest_city import DbConfig, Location
+from pg_nearest_city import AsyncNearestCity, DbConfig, Location
 
 
 def get_test_config():

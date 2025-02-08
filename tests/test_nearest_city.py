@@ -4,8 +4,7 @@ import psycopg
 import pytest
 import pytest
 
-from pg_nearest_city.nearest_city import NearestCity
-from pg_nearest_city.base_nearest_city import DbConfig, Location
+from pg_nearest_city import NearestCity, DbConfig, Location
 
 
 def get_test_config():
