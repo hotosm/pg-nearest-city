@@ -72,18 +72,53 @@ and has an acceptable performance penalty (see [benchmarks](#benchmarks)).
 > - Reduced load on free services such as Nominatim (particularly when running
 > in automated tests frequently).
 
-## Priorities
+### Priorities
 
 - Lightweight package size.
 - Minimal memory footprint.
 - Reasonably good performance.
 
-## How This Package Works
+### How This Package Works
 
 - geonames.org data.
 - Voronoi polygons based on geopoints.
 - Gzipped data bundled with package.
 - Query the Voronois.
+
+## Usage
+
+### Install
+
+Distributed as a pip package on PyPi:
+
+```bash
+pip install pg-nearest-city
+# or use your dependency manager of choice
+```
+
+### Run The Code
+
+Async
+
+```python
+
+```
+
+### Optional (Configure With Env Vars)
+
+- If your app upstream already has a psycopg connection, this can be
+  passed through.
+- If you require a new database connection, the connection parameters
+  can be defined as DbConfig object variables, or alternatively
+  as variables from your system environment:
+
+```dotenv
+PGNEAREST_DB_NAME=cities
+PGNEAREST_DB_USER=cities
+PGNEAREST_DB_PASSWORD=somepassword
+PGNEAREST_DB_HOST=localhost
+PGNEAREST_DB_PORT=5432
+```
 
 ## Benchmarks
 

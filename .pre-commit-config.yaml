@@ -26,6 +26,15 @@ repos:
       - id: commitizen
         stages: [commit-msg]
 
+  # Autoformat: general file fixes / time savers
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+      - id: mixed-line-ending
+
   # Lint / autoformat: Python code
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Ruff version.

@@ -1,5 +1,7 @@
 """Test fixtures."""
+
 import pytest
+
 
 @pytest.fixture(scope="session")
 def db():

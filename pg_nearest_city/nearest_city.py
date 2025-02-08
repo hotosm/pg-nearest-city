@@ -1,26 +1,32 @@
-import importlib.resources
-from pg_nearest_city import base_nearest_city
-import psycopg
+"""Main logic."""
+
 import gzip
+import importlib.resources
+import logging
+from contextlib import contextmanager
+from typing import Optional
+
+import psycopg
 from psycopg import Cursor
 
-from typing import Optional, Union
-from pg_nearest_city.base_nearest_city import BaseNearestCity
-from pg_nearest_city.base_nearest_city import Location
-from pg_nearest_city.base_nearest_city import InitializationStatus
-from contextlib import contextmanager
-
-import logging
-from typing import Optional
+from pg_nearest_city import base_nearest_city
+from pg_nearest_city.base_nearest_city import (
+    BaseNearestCity,
+    InitializationStatus,
+    Location,
+)
 
 logger = logging.getLogger("pg_nearest_city")
 
+
 class NearestCity:
+    """Reverse geocoding to the nearest city over 1000 population."""
+
     @classmethod
     @contextmanager
     def connect(cls, db: psycopg.Connection | base_nearest_city.DbConfig):
-        """Create a managed NearestCity instance with automatic initialization and cleanup.
-        
+        """Managed NearestCity instance with automatic initialization and cleanup.
+
         Args:
             db: Either a DbConfig for a new connection or an existing psycopg Connection
         """
@@ -34,7 +40,7 @@ class NearestCity:
             conn = psycopg.Connection.connect(db.get_connection_string())
 
         geocoder = cls(conn)
-        
+
         try:
             geocoder.initialize()
             yield geocoder
@@ -42,12 +48,16 @@ class NearestCity:
             if not is_external_connection:
                 conn.close()
 
+    def __init__(
+        self,
+        connection: psycopg.Connection,
+        logger: Optional[logging.Logger] = None,
+    ):
+        """Initialize reverse geocoder with an existing AsyncConnection.
 
-    def __init__(self, connection: psycopg.Connection, logger: Optional[logging.Logger] = None):
-        """Initialize reverse geocoder with an existing AsyncConnection
-        
         Args:
             db: An existing psycopg AsyncConnection
+            connection: psycopg.AsyncConnection
             logger: Optional custom logger. If not provided, uses package logger
         """
         # Allow users to provide their own logger while having a sensible default
@@ -69,51 +79,52 @@ class NearestCity:
             with self.connection.cursor() as cur:
                 self._logger.info("Starting database initialization check")
                 status = self._check_initialization_status(cur)
-                
+
                 if status.is_fully_initialized:
                     self._logger.info("Database already properly initialized")
                     return
-                
+
                 if status.has_table and not status.is_fully_initialized:
                     missing = status.get_missing_components()
                     self._logger.warning(
-                        "Database needs repair. Missing components: %s", 
-                        ", ".join(missing)
+                        "Database needs repair. Missing components: %s",
+                        ", ".join(missing),
                     )
                     self._logger.info("Reinitializing from scratch")
                     cur.execute("DROP TABLE IF EXISTS pg_nearest_city_geocoding;")
-                
+
                 self._logger.info("Creating geocoding table")
                 self._create_geocoding_table(cur)
-                
+
                 self._logger.info("Importing city data")
                 self._import_cities(cur)
-                
+
                 self._logger.info("Processing Voronoi polygons")
                 self._import_voronoi_polygons(cur)
-                
+
                 self._logger.info("Creating spatial index")
                 self._create_spatial_index(cur)
-                
+
                 self.connection.commit()
-                
+
                 self._logger.debug("Verifying final initialization state")
                 final_status = self._check_initialization_status(cur)
                 if not final_status.is_fully_initialized:
                     missing = final_status.get_missing_components()
                     self._logger.error(
                         "Initialization failed final validation. Missing: %s",
-                        ", ".join(missing)
+                        ", ".join(missing),
                     )
                     raise RuntimeError(
-                        f"Initialization failed final validation. Missing components: {', '.join(missing)}"
+                        "Initialization failed final validation. "
+                        f"Missing components: {', '.join(missing)}"
                     )
-                
+
                 self._logger.info("Initialization complete and verified")
-                
+
         except Exception as e:
             self._logger.error("Database initialization failed: %s", str(e))
-            raise RuntimeError(f"Database initialization failed: {str(e)}")
+            raise RuntimeError(f"Database initialization failed: {str(e)}") from e
 
     def query(self, lat: float, lon: float) -> Optional[Location]:
         """Find the nearest city to the given coordinates using Voronoi regions.
@@ -129,7 +140,6 @@ class NearestCity:
             ValueError: If coordinates are out of valid ranges
             RuntimeError: If database query fails
         """
-
         # Validate coordinate ranges
         BaseNearestCity.validate_coordinates(lon, lat)
 
@@ -151,26 +161,27 @@ class NearestCity:
                 )
         except Exception as e:
             self._logger.error(f"Reverse geocoding failed: {str(e)}")
-            raise RuntimeError(f"Reverse geocoding failed: {str(e)}")
+            raise RuntimeError(f"Reverse geocoding failed: {str(e)}") from e
 
-
-    def _check_initialization_status(self, cur: psycopg.Cursor) -> InitializationStatus:
+    def _check_initialization_status(
+        self, cur: psycopg.Cursor
+    ) -> InitializationStatus:
         """Check the status and integrity of the geocoding database.
 
-        Performs essential validation checks to ensure the database is properly initialized
-        and contains valid data.
+        Performs essential validation checks to ensure the database is
+        properly initialized and contains valid data.
         """
         status = InitializationStatus()
-        
+
         # Check table existence
-        cur.execute(BaseNearestCity._get_table_existance_query())
+        cur.execute(BaseNearestCity._get_tableexistence_query())
         table_exists = cur.fetchone()
         status.has_table = bool(table_exists and table_exists[0])
-        
+
         # If table doesn't exist, we can't check other properties
         if not status.has_table:
             return status
-            
+
         # Check table structure
         cur.execute(BaseNearestCity._get_table_structure_query())
         columns = {col: dtype for col, dtype in cur.fetchall()}
@@ -186,20 +197,20 @@ class NearestCity:
         # If table doesn't have valid structure, we can't check other properties
         if not status.has_valid_structure:
             return status
-        
+
         # Check data completeness
         cur.execute(BaseNearestCity._get_data_completeness_query())
         counts = cur.fetchone()
         total_cities, cities_with_voronoi = counts
-        
+
         status.has_data = total_cities > 0
         status.has_complete_voronoi = cities_with_voronoi == total_cities
-        
+
         # Check spatial index
         cur.execute(BaseNearestCity._get_spatial_index_check_query())
         has_index = cur.fetchone()
         status.has_spatial_index = bool(has_index and has_index[0])
-        
+
         return status
 
     def _import_cities(self, cur: Cursor):
@@ -218,21 +229,22 @@ class NearestCity:
                 self._logger.info(f"Imported {copied_bytes:,} bytes of city data")
 
     def _create_geocoding_table(self, cur: Cursor):
-        """Create the main table"""
+        """Create the main table."""
         cur.execute("""
             CREATE TABLE pg_nearest_city_geocoding (
                 city varchar,
                 country varchar,
                 lat decimal,
                 lon decimal,
-                geom geometry(Point,4326) GENERATED ALWAYS AS (ST_SetSRID(ST_MakePoint(lon, lat), 4326)) STORED,
+                geom geometry(Point,4326)
+                  GENERATED ALWAYS AS (ST_SetSRID(ST_MakePoint(lon, lat), 4326))
+                  STORED,
                 voronoi geometry(Polygon,4326)
             );
         """)
 
     def _import_voronoi_polygons(self, cur: Cursor):
         """Import and integrate Voronoi polygons into the main table."""
-
         if not self.voronoi_file.exists():
             raise FileNotFoundError(f"Voronoi file not found: {self.voronoi_file}")
 
@@ -268,7 +280,7 @@ class NearestCity:
     def _create_spatial_index(self, cur: Cursor):
         """Create a spatial index on the Voronoi polygons for efficient queries."""
         cur.execute("""
-            CREATE INDEX geocoding_voronoi_idx 
-            ON pg_nearest_city_geocoding 
+            CREATE INDEX geocoding_voronoi_idx
+            ON pg_nearest_city_geocoding
             USING GIST (voronoi);
         """)

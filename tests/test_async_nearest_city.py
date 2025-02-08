@@ -1,7 +1,5 @@
 """Test async geocoder initialization and data file loading."""
 
-import os
-
 import psycopg
 import pytest
 import pytest_asyncio
@@ -12,13 +10,8 @@ from pg_nearest_city.base_nearest_city import DbConfig, Location
 
 def get_test_config():
     """Get database configuration from environment variables or defaults."""
-    return DbConfig(
-        dbname=os.getenv("PGNEAREST_TEST_DB", "cities"),
-        user=os.getenv("PGNEAREST_TEST_USER", "cities"),
-        password=os.getenv("PGNEAREST_TEST_PASSWORD", "dummycipassword"),
-        host=os.getenv("PGNEAREST_TEST_HOST", "db"),
-        port=int(os.getenv("PGNEAREST_TEST_PORT", "5432")),
-    )
+    # Use default connection params
+    return DbConfig()
 
 
 @pytest_asyncio.fixture()
