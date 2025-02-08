@@ -437,10 +437,12 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "psycopg" },
-    { name = "unasync" },
 ]
 
 [package.dev-dependencies]
+dev = [
+    { name = "unasync" },
+]
 docs = [
     { name = "mkdocs" },
     { name = "mkdocs-exclude" },
@@ -454,12 +456,10 @@ test = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "psycopg", specifier = ">=3.1" },
-    { name = "unasync", specifier = ">=0.6.0" },
-]
+requires-dist = [{ name = "psycopg", specifier = ">=3.1" }]
 
 [package.metadata.requires-dev]
+dev = [{ name = "unasync", specifier = ">=0.6.0" }]
 docs = [
     { name = "mkdocs", specifier = ">=1.6.1" },
     { name = "mkdocs-exclude", specifier = ">=1.0.2" },

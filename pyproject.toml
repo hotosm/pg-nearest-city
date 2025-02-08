@@ -17,11 +17,16 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "psycopg>=3.1",
-    "unasync>=0.6.0",
 ]
+
+[project.urls]
+homepage = "https://github.com/hotosm/pg-nearest-city"
+documentation = "https://hotosm.github.io/pg-nearest-city"
+repository = "https://github.com/hotosm/pg-nearest-city"
 
 [project.scripts]
 build-sync = "build_sync:build_sync"
@@ -37,6 +42,9 @@ docs = [
     "mkdocs-git-revision-date-localized-plugin>=1.3.0",
     "mkdocs-material>=9.5.49",
     "mkdocstrings-python>=1.13.0",
+]
+dev = [
+    "unasync>=0.6.0",
 ]
 
 [build-system]

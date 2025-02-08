@@ -1,10 +1,20 @@
 repos:
+  # Dev: install async for next command
+  - repo: local
+    hooks:
+      - id: dev-deps
+        name: instal-dev-deps
+        language: system
+        entry: uv sync --group dev
+        always_run: true
+        pass_filenames: false
+
   # Unasync: Convert async --> sync
   - repo: local
     hooks:
       - id: unasync
-        name: unasync
-        language: python
+        name: unasync-all
+        language: system
         entry: uv run python build_sync.py
         always_run: true
         pass_filenames: false
