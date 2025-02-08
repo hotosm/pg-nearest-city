@@ -57,6 +57,9 @@ target-version = "py310"
 exclude = [
     ".ruff_cache",
     "pg_nearest_city/__version__.py",
+    # Generated files
+    "pg_nearest_city/nearest_city.py",
+    "tests/test_nearest_city.py",
 ]
 [tool.ruff.lint]
 select = ["I", "E", "W", "D", "B", "F", "N", "Q"]
@@ -69,6 +72,8 @@ addopts = "-ra -q"
 testpaths = [
     "tests",
 ]
+asyncio_mode="auto"
+asyncio_default_fixture_loop_scope="function"
 
 [tool.commitizen]
 name = "cz_conventional_commits"

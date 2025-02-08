@@ -26,10 +26,12 @@ services:
       target: ci
     container_name: pg-nearest-city
     volumes:
+      # Mount project config
+      - ./pyproject.toml:/data/pyproject.toml:ro
       # Mount local package
-      - ./pg_nearest_city:/opt/python/lib/python3.10/site-packages/pg_nearest_city
+      - ./pg_nearest_city:/opt/python/lib/python3.10/site-packages/pg_nearest_city:ro
       # Mount local tests
-      - ./tests:/data/tests
+      - ./tests:/data/tests:ro
     depends_on:
       db:
         condition: service_healthy

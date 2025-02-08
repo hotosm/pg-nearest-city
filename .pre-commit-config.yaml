@@ -1,4 +1,14 @@
 repos:
+  # Unasync: Convert async --> sync
+  - repo: local
+    hooks:
+      - id: unasync
+        name: unasync
+        language: python
+        entry: uv run python build_sync.py
+        always_run: true
+        pass_filenames: false
+
   # Versioning: Commit messages & changelog
   - repo: https://github.com/commitizen-tools/commitizen
     rev: v4.1.0
