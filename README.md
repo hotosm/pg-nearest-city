@@ -98,19 +98,63 @@ pip install pg-nearest-city
 
 ### Run The Code
 
-Async
+#### Async
 
 ```python
+from pg_nearest_city import AsyncNearestCity
 
+# Existing code to get db connection, say from API endpoint
+db = await get_db_connection()
+
+async with AsyncNearestCity.connect(db) as geocoder:
+    location = await geocoder.query(40.7128, -74.0060)
+
+print(location.city)
+# "New York City"
+print(location.country)
+# "USA"
 ```
 
-### Optional (Configure With Env Vars)
+#### Sync
+
+```python
+from pg_nearest_city import NearestCity
+
+# Existing code to get db connection, say from API endpoint
+db = get_db_connection()
+
+with AsyncNearestCity.connect(db) as geocoder:
+    location = geocoder.query(40.7128, -74.0060)
+
+print(location.city)
+# "New York City"
+print(location.country)
+# "USA"
+```
+
+#### Create A New DB Connection
 
 - If your app upstream already has a psycopg connection, this can be
   passed through.
 - If you require a new database connection, the connection parameters
-  can be defined as DbConfig object variables, or alternatively
-  as variables from your system environment:
+  can be defined as DbConfig object variables:
+
+```python
+from pg_nearest_city import DbConfig, AsyncNearestCity
+
+db_config = DbConfig(
+    dbname="db1",
+    user="user1",
+    password="pass1",
+    host="localhost",
+    port="5432",
+)
+
+async with AsyncNearestCity.connect(db_config) as geocoder:
+    location = await geocoder.query(40.7128, -74.0060)
+```
+
+- Or alternatively as variables from your system environment:
 
 ```dotenv
 PGNEAREST_DB_NAME=cities
@@ -118,6 +162,15 @@ PGNEAREST_DB_USER=cities
 PGNEAREST_DB_PASSWORD=somepassword
 PGNEAREST_DB_HOST=localhost
 PGNEAREST_DB_PORT=5432
+```
+
+then
+
+```python
+from pg_nearest_city import DbConfig, AsyncNearestCity
+
+async with AsyncNearestCity.connect() as geocoder:
+    location = await geocoder.query(40.7128, -74.0060)
 ```
 
 ## Benchmarks
