@@ -106,7 +106,7 @@ from pg_nearest_city import AsyncNearestCity
 # Existing code to get db connection, say from API endpoint
 db = await get_db_connection()
 
-async with AsyncNearestCity.connect(db) as geocoder:
+async with AsyncNearestCity(db) as geocoder:
     location = await geocoder.query(40.7128, -74.0060)
 
 print(location.city)
@@ -123,7 +123,7 @@ from pg_nearest_city import NearestCity
 # Existing code to get db connection, say from API endpoint
 db = get_db_connection()
 
-with AsyncNearestCity.connect(db) as geocoder:
+with NearestCity(db) as geocoder:
     location = geocoder.query(40.7128, -74.0060)
 
 print(location.city)
@@ -150,7 +150,7 @@ db_config = DbConfig(
     port="5432",
 )
 
-async with AsyncNearestCity.connect(db_config) as geocoder:
+async with AsyncNearestCity(db_config) as geocoder:
     location = await geocoder.query(40.7128, -74.0060)
 ```
 
@@ -167,9 +167,9 @@ PGNEAREST_DB_PORT=5432
 then
 
 ```python
-from pg_nearest_city import DbConfig, AsyncNearestCity
+from pg_nearest_city import AsyncNearestCity
 
-async with AsyncNearestCity.connect() as geocoder:
+async with AsyncNearestCity() as geocoder:
     location = await geocoder.query(40.7128, -74.0060)
 ```
 
