@@ -3,7 +3,6 @@
 import gzip
 import importlib.resources
 import logging
-from contextlib import contextmanager
 from typing import Optional
 
 import psycopg
@@ -22,46 +21,9 @@ logger = logging.getLogger("pg_nearest_city")
 class NearestCity:
     """Reverse geocoding to the nearest city over 1000 population."""
 
-    @classmethod
-    @contextmanager
-    def connect(
-        cls,
-        db: Optional[psycopg.Connection | DbConfig] = None,
-    ):
-        """Managed NearestCity instance with automatic initialization and cleanup.
-
-        Args:
-            db: Either a DbConfig for a new connection or an existing
-                psycopg Connection. If neither are passed, attempts to extract
-                variables from system environment, else uses defaults.
-        """
-        is_external_connection = isinstance(db, psycopg.Connection)
-        is_db_config = isinstance(db, DbConfig)
-
-        conn: psycopg.Connection
-
-        if is_external_connection:
-            conn = db
-        elif is_db_config:
-            conn = psycopg.Connection.connect(db.get_connection_string())
-        else:
-            # Fallback to env var extraction, or defaults for testing
-            conn = psycopg.Connection.connect(
-                DbConfig().get_connection_string()
-            )
-
-        geocoder = cls(conn)
-
-        try:
-            geocoder.initialize()
-            yield geocoder
-        finally:
-            if not is_external_connection:
-                conn.close()
-
     def __init__(
         self,
-        connection: psycopg.Connection,
+        db: psycopg.Connection | DbConfig | None = None,
         logger: Optional[logging.Logger] = None,
     ):
         """Initialize reverse geocoder with an existing Connection.
@@ -69,11 +31,14 @@ class NearestCity:
         Args:
             db: An existing psycopg Connection
             connection: psycopg.Connection
-            logger: Optional custom logger. If not provided, uses package logger
+            logger: Optional custom logger. If not provided, uses package logger.
         """
         # Allow users to provide their own logger while having a sensible default
         self._logger = logger or logging.getLogger("pg_nearest_city")
-        self.connection = connection
+        self._db = db
+        self.connection: psycopg.Connection = None
+        self._is_external_connection = False
+        self._is_initialized = False
 
         with importlib.resources.path(
             "pg_nearest_city.data", "cities_1000_simple.txt.gz"
@@ -83,6 +48,38 @@ class NearestCity:
             "pg_nearest_city.data", "voronois.wkb.gz"
         ) as voronoi_path:
             self.voronoi_file = voronoi_path
+
+    def __enter__(self):
+        """Open the context manager."""
+        self.connection = self.get_connection(self._db)
+        # Create the relevant tables and validate
+        self.initialize()
+        self._is_initialized = True
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """Close the context manager."""
+        if self.connection and not self._is_external_connection:
+            self.connection.close()
+        self._initialized = False
+
+    def get_connection(
+        self,
+        db: Optional[psycopg.Connection | DbConfig] = None,
+    ) -> psycopg.Connection:
+        """Determine the database connection to use."""
+        self._is_external_connection = isinstance(db, psycopg.Connection)
+        is_db_config = isinstance(db, DbConfig)
+
+        if self._is_external_connection:
+            return db
+        elif is_db_config:
+            return psycopg.Connection.connect(db.get_connection_string())
+        else:
+            # Fallback to env var extraction, or defaults for testing
+            return psycopg.Connection.connect(
+                DbConfig().get_connection_string(),
+            )
 
     def initialize(self) -> None:
         """Initialize the geocoding database with validation checks."""
@@ -137,6 +134,17 @@ class NearestCity:
             self._logger.error("Database initialization failed: %s", str(e))
             raise RuntimeError(f"Database initialization failed: {str(e)}") from e
 
+    def ensure_initialized(self):
+        """Raise an error if the context manager was not used."""
+        if not self._is_initialized:
+            raise RuntimeError("""
+                NearestCity must be used within 'with' context.
+                For example:
+
+                with NearestCity() as geocoder:
+                    details = geocoder.query(lat, lon)
+            """)
+
     def query(self, lat: float, lon: float) -> Optional[Location]:
         """Find the nearest city to the given coordinates using Voronoi regions.
 
@@ -151,13 +159,16 @@ class NearestCity:
             ValueError: If coordinates are out of valid ranges
             RuntimeError: If database query fails
         """
+        # Throw an error if not used in 'with' block
+        self.ensure_initialized()
+
         # Validate coordinate ranges
         BaseNearestCity.validate_coordinates(lon, lat)
 
         try:
             with self.connection.cursor() as cur:
                 cur.execute(
-                    BaseNearestCity._get_reverse_geocoding_query(lon, lat)
+                    BaseNearestCity._get_reverse_geocoding_query(lon, lat),
                 )
                 result = cur.fetchone()
 
@@ -175,7 +186,8 @@ class NearestCity:
             raise RuntimeError(f"Reverse geocoding failed: {str(e)}") from e
 
     def _check_initialization_status(
-        self, cur: psycopg.Cursor
+        self,
+        cur: psycopg.Cursor,
     ) -> InitializationStatus:
         """Check the status and integrity of the geocoding database.
 
@@ -270,7 +282,7 @@ class NearestCity:
 
         # Import the binary WKB data
         with cur.copy(
-            "COPY voronoi_import (city, country, wkb) FROM STDIN"
+            "COPY voronoi_import (city, country, wkb) FROM STDIN",
         ) as copy:
             with gzip.open(self.voronoi_file, "rb") as f:
                 while data := f.read(8192):
