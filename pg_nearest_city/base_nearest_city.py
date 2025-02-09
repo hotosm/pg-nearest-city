@@ -22,13 +22,22 @@ class DbConfig:
 
     def __post_init__(self):
         """Ensures env variables are read at runtime, not at class definition."""
-        self.dbname = self.dbname or os.getenv("PGNEAREST_DB_NAME", "cities")
-        self.user = self.user or os.getenv("PGNEAREST_DB_USER", "cities")
-        self.password = self.password or os.getenv(
-            "PGNEAREST_DB_PASSWORD", "dummycipassword"
-        )
+        self.dbname = self.dbname or os.getenv("PGNEAREST_DB_NAME")
+        self.user = self.user or os.getenv("PGNEAREST_DB_USER")
+        self.password = self.password or os.getenv("PGNEAREST_DB_PASSWORD")
         self.host = self.host or os.getenv("PGNEAREST_DB_HOST", "db")
         self.port = self.port or int(os.getenv("PGNEAREST_DB_PORT", "5432"))
+
+        # Raise error if any required field is missing
+        missing_fields = [
+            field
+            for field in ["dbname", "user", "password"]
+            if not getattr(self, field)
+        ]
+        if missing_fields:
+            raise ValueError(
+                f"Missing required database config fields: {', '.join(missing_fields)}"
+            )
 
     def get_connection_string(self) -> str:
         """Connection string that psycopg accepts."""

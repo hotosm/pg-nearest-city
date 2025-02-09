@@ -53,27 +53,25 @@ def unasync_line(line):
 
 def unasync_file(in_path, out_path):
     """Remove async tokens in given file."""
-    with open(in_path, "r") as in_file:
-        with open(out_path, "w", newline="") as out_file:
-            for line in in_file.readlines():
-                line = unasync_line(line)
-                out_file.write(line)
+    with open(in_path, "r") as in_file, open(out_path, "w", newline="") as out_file:
+        for line in in_file.readlines():
+            line = unasync_line(line)
+            out_file.write(line)
 
 
 def unasync_file_check(in_path, out_path):
     """Check if async tokens need to be removed."""
-    with open(in_path, "r") as in_file:
-        with open(out_path, "r") as out_file:
-            for in_line, out_line in zip(
-                in_file.readlines(), out_file.readlines(), strict=False
-            ):
-                expected = unasync_line(in_line)
-                if out_line != expected:
-                    print(f"unasync mismatch between {in_path!r} and {out_path!r}")
-                    print(f"Async code:         {in_line!r}")
-                    print(f"Expected sync code: {expected!r}")
-                    print(f"Actual sync code:   {out_line!r}")
-                    sys.exit(1)
+    with open(in_path, "r") as in_file, open(out_path, "r") as out_file:
+        for in_line, out_line in zip(
+            in_file.readlines(), out_file.readlines(), strict=False
+        ):
+            expected = unasync_line(in_line)
+            if out_line != expected:
+                print(f"unasync mismatch between {in_path!r} and {out_path!r}")
+                print(f"Async code:         {in_line!r}")
+                print(f"Expected sync code: {expected!r}")
+                print(f"Actual sync code:   {out_line!r}")
+                sys.exit(1)
 
 
 def unasync_dir(in_dir, out_dir, check_only=False):
@@ -95,6 +93,9 @@ def unasync_dir(in_dir, out_dir, check_only=False):
 def main():
     """Run the async --> sync converter."""
     check_only = "--check" in sys.argv
+
+    if not check_only:
+        print("**Files to unasync:**")
     unasync_dir(
         "pg_nearest_city/_async", "pg_nearest_city/_sync", check_only=check_only
     )
@@ -103,6 +104,7 @@ def main():
     if len(USED_SUBS) != len(SUBS):
         unused_subs = [SUBS[i] for i in range(len(SUBS)) if i not in USED_SUBS]
 
+        print("")
         print("These patterns were not used:")
         pprint(unused_subs)
         # Allow pre-commit to pass
