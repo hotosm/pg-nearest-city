@@ -9,7 +9,6 @@ from typing import Optional
 import psycopg
 from psycopg import AsyncCursor
 
-from pg_nearest_city import base_nearest_city
 from pg_nearest_city.base_nearest_city import (
     BaseNearestCity,
     DbConfig,
@@ -27,7 +26,7 @@ class AsyncNearestCity:
     @asynccontextmanager
     async def connect(
         cls,
-        db: Optional[psycopg.AsyncConnection | base_nearest_city.DbConfig] = None,
+        db: Optional[psycopg.AsyncConnection | DbConfig] = None,
     ):
         """Managed NearestCity instance with automatic initialization and cleanup.
 
@@ -37,7 +36,7 @@ class AsyncNearestCity:
                 variables from system environment, else uses defaults.
         """
         is_external_connection = isinstance(db, psycopg.AsyncConnection)
-        is_db_config = isinstance(db, base_nearest_city.DbConfig)
+        is_db_config = isinstance(db, DbConfig)
 
         conn: psycopg.AsyncConnection
 

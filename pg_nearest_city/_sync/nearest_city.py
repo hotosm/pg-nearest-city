@@ -9,7 +9,6 @@ from typing import Optional
 import psycopg
 from psycopg import Cursor
 
-from pg_nearest_city import base_nearest_city
 from pg_nearest_city.base_nearest_city import (
     BaseNearestCity,
     DbConfig,
@@ -27,7 +26,7 @@ class NearestCity:
     @contextmanager
     def connect(
         cls,
-        db: Optional[psycopg.Connection | base_nearest_city.DbConfig] = None,
+        db: Optional[psycopg.Connection | DbConfig] = None,
     ):
         """Managed NearestCity instance with automatic initialization and cleanup.
 
@@ -37,7 +36,7 @@ class NearestCity:
                 variables from system environment, else uses defaults.
         """
         is_external_connection = isinstance(db, psycopg.Connection)
-        is_db_config = isinstance(db, base_nearest_city.DbConfig)
+        is_db_config = isinstance(db, DbConfig)
 
         conn: psycopg.Connection
 
@@ -65,11 +64,11 @@ class NearestCity:
         connection: psycopg.Connection,
         logger: Optional[logging.Logger] = None,
     ):
-        """Initialize reverse geocoder with an existing AsyncConnection.
+        """Initialize reverse geocoder with an existing Connection.
 
         Args:
-            db: An existing psycopg AsyncConnection
-            connection: psycopg.AsyncConnection
+            db: An existing psycopg Connection
+            connection: psycopg.Connection
             logger: Optional custom logger. If not provided, uses package logger
         """
         # Allow users to provide their own logger while having a sensible default
