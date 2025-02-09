@@ -4,6 +4,7 @@ import gzip
 import importlib.resources
 import logging
 from typing import Optional
+from textwrap import dedent, fill
 
 import psycopg
 from psycopg import AsyncCursor
@@ -83,6 +84,9 @@ class AsyncNearestCity:
 
     async def initialize(self) -> None:
         """Initialize the geocoding database with validation checks."""
+        if not self.connection:
+            self._inform_user_if_not_context_manager()
+
         try:
             async with self.connection.cursor() as cur:
                 self._logger.info("Starting database initialization check")
@@ -134,16 +138,19 @@ class AsyncNearestCity:
             self._logger.error("Database initialization failed: %s", str(e))
             raise RuntimeError(f"Database initialization failed: {str(e)}") from e
 
-    def ensure_initialized(self):
+    def _inform_user_if_not_context_manager(self):
         """Raise an error if the context manager was not used."""
         if not self._is_initialized:
-            raise RuntimeError("""
-                AsyncNearestCity must be used within 'async with' context.
-                For example:
-
-                async with AsyncNearestCity() as geocoder:
-                    details = geocoder.query(lat, lon)
+            raise RuntimeError(
+                fill(
+                    dedent("""
+                AsyncNearestCity must be used within 'async with' context.\n
+                    For example:\n
+                    async with AsyncNearestCity() as geocoder:\n
+                        details = geocoder.query(lat, lon)
             """)
+                )
+            )
 
     async def query(self, lat: float, lon: float) -> Optional[Location]:
         """Find the nearest city to the given coordinates using Voronoi regions.
@@ -160,7 +167,7 @@ class AsyncNearestCity:
             RuntimeError: If database query fails
         """
         # Throw an error if not used in 'with' block
-        self.ensure_initialized()
+        self._inform_user_if_not_context_manager()
 
         # Validate coordinate ranges
         BaseNearestCity.validate_coordinates(lon, lat)

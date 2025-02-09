@@ -158,6 +158,19 @@ def test_check_initialization_complete(test_db):
     assert status.has_data
 
 
+def test_init_db_at_startup_then_query(test_db):
+    """Web servers have a startup lifecycle that could do the initialisation."""
+    with NearestCity(test_db) as geocoder:
+        pass  # do nothing, initialisation is complete here
+
+    with NearestCity() as geocoder:
+        location = geocoder.query(40.7128, -74.0060)
+
+    assert location is not None
+    assert location.city == "New York City"
+    assert isinstance(location, Location)
+
+
 def test_invalid_coordinates(test_db):
     """Test that invalid coordinates are properly handled."""
     with NearestCity(test_db) as geocoder:
