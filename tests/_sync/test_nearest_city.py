@@ -29,11 +29,18 @@ def test_db(test_db_conn_string):
 
 def test_db_conn_missng_vars():
     """Check db connection error raised on missing vars."""
+    original_user = os.getenv("PGNEAREST_DB_USER")
+    original_pass = os.getenv("PGNEAREST_DB_PASSWORD")
+
     os.environ["PGNEAREST_DB_USER"] = ""
     os.environ["PGNEAREST_DB_PASSWORD"] = ""
 
     with pytest.raises(ValueError):
         DbConfig()
+
+    # Re-set env vars, so following tests dont fail
+    os.environ["PGNEAREST_DB_USER"] = original_user or ""
+    os.environ["PGNEAREST_DB_PASSWORD"] = original_pass or ""
 
 
 def test_db_conn_vars_from_env():
