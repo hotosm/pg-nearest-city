@@ -80,10 +80,14 @@ and has an acceptable performance penalty (see [benchmarks](#benchmarks)).
 
 ### How This Package Works
 
-- geonames.org data.
-- Voronoi polygons based on geopoints.
-- Gzipped data bundled with package.
-- Query the Voronois.
+- Ingest geonames.org data for cities over 1000 population.
+- Create voronoi polygons based on city geopoints.
+- Bundle the voronoi data with this package and load into Postgis.
+- Query the loaded voronoi data with a given geopoint, returning the city.
+
+The diagram below should give a good indication for how this works:
+
+![voronoi_italy](./voronoi_italy.jpg)
 
 ## Usage
 
