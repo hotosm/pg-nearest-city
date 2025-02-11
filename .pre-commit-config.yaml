@@ -16,6 +16,12 @@ repos:
       - id: commitizen
         stages: [commit-msg]
 
+  # Deps: ensure Python uv lockfile is up to date
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.5.29
+    hooks:
+      - id: uv-lock
+
   # Autoformat: general file fixes / time savers
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
