@@ -12,6 +12,14 @@ class DbConfig:
     """Database config for Postgres.
 
     Allows overriding values via constructor parameters, fallback to env vars.
+
+
+    Args:
+        dbname(str): Database name.
+        user(str): Database user.
+        password(str): Database password.
+        host(str): Database host.
+        port(str): Database port.
     """
 
     dbname: Optional[str] = None
@@ -49,7 +57,14 @@ class DbConfig:
 
 @dataclass
 class Location:
-    """A location object for JSON serialisation."""
+    """A location object for JSON serialisation.
+
+    Args:
+        city(str): The city.
+        country(str): The country.
+        lat(str): Latitude.
+        lon(str): Longitude.
+    """
 
     city: str
     country: str
