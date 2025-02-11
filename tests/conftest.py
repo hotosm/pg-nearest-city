@@ -2,8 +2,11 @@
 
 import pytest
 
+from pg_nearest_city import DbConfig
 
-@pytest.fixture(scope="session")
-def db():
-    """Database URI."""
-    return "postgresql://cities:dummycipassword@db:5432/cities"
+
+@pytest.fixture()
+def test_db_conn_string():
+    """Get the database connection string for the test db."""
+    # Use connection params from env
+    return DbConfig().get_connection_string()

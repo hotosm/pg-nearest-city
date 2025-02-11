@@ -32,6 +32,11 @@ services:
       - ./pg_nearest_city:/opt/python/lib/python3.10/site-packages/pg_nearest_city:ro
       # Mount local tests
       - ./tests:/data/tests:ro
+    environment:
+      - PGNEAREST_DB_HOST=db
+      - PGNEAREST_DB_USER=cities
+      - PGNEAREST_DB_PASSWORD=dummycipassword
+      - PGNEAREST_DB_NAME=cities
     depends_on:
       db:
         condition: service_healthy

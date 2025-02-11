@@ -1,25 +1,21 @@
 """Test async geocoder initialization and data file loading."""
 
-import psycopg
+import os
+
 import pytest
 import pytest_asyncio
+import psycopg
 
-from pg_nearest_city import AsyncNearestCity, DbConfig, Location
-
-
-def get_test_config():
-    """Get database configuration from environment variables or defaults."""
-    # Use default connection params
-    return DbConfig()
+from pg_nearest_city import AsyncNearestCity, Location, DbConfig
 
 
+# NOTE we define the fixture here and not in conftest.py to allow
+# async --> sync conversion to take place
 @pytest_asyncio.fixture()
-async def test_db():
+async def test_db(test_db_conn_string):
     """Provide a clean database connection for each test."""
-    config = get_test_config()
-
     # Create a single connection for the test
-    conn = await psycopg.AsyncConnection.connect(config.get_connection_string())
+    conn = await psycopg.AsyncConnection.connect(test_db_conn_string)
 
     # Clean up any existing state
     async with conn.cursor() as cur:
@@ -31,9 +27,35 @@ async def test_db():
     await conn.close()
 
 
-async def test_full_initialization_connect():
+async def test_db_conn_missng_vars():
+    """Check db connection error raised on missing vars."""
+    original_user = os.getenv("PGNEAREST_DB_USER")
+    original_pass = os.getenv("PGNEAREST_DB_PASSWORD")
+
+    os.environ["PGNEAREST_DB_USER"] = ""
+    os.environ["PGNEAREST_DB_PASSWORD"] = ""
+
+    with pytest.raises(ValueError):
+        DbConfig()
+
+    # Re-set env vars, so following tests dont fail
+    os.environ["PGNEAREST_DB_USER"] = original_user or ""
+    os.environ["PGNEAREST_DB_PASSWORD"] = original_pass or ""
+
+
+async def test_db_conn_vars_from_env():
+    """Check db connection variables are passed through."""
+    db_conf = DbConfig()
+    assert db_conf.host == os.getenv("PGNEAREST_DB_HOST")
+    assert db_conf.user == os.getenv("PGNEAREST_DB_USER")
+    assert db_conf.password == os.getenv("PGNEAREST_DB_PASSWORD")
+    assert db_conf.dbname == os.getenv("PGNEAREST_DB_NAME")
+    assert db_conf.port == 5432
+
+
+async def test_full_initialization_query():
     """Test completet database initialization and basic query through connect method."""
-    async with AsyncNearestCity.connect(get_test_config()) as geocoder:
+    async with AsyncNearestCity() as geocoder:
         location = await geocoder.query(40.7128, -74.0060)
 
     assert location is not None
@@ -41,21 +63,17 @@ async def test_full_initialization_connect():
     assert isinstance(location, Location)
 
 
-async def test_full_initialization(test_db):
-    """Test complete database initialization and basic query."""
-    geocoder = AsyncNearestCity(test_db)
-    await geocoder.initialize()
-
-    # Test with New York coordinates
-    location = await geocoder.query(40.7128, -74.0060)
-    assert location is not None
-    assert location.city == "New York City"
-    assert isinstance(location, Location)
+async def test_init_without_context_manager():
+    """Should raise an error if not used in with block."""
+    with pytest.raises(RuntimeError):
+        geocoder = AsyncNearestCity()
+        await geocoder.query(40.7128, -74.0060)
 
 
 async def test_check_initialization_fresh_database(test_db):
     """Test initialization check on a fresh database with no tables."""
     geocoder = AsyncNearestCity(test_db)
+
     async with test_db.cursor() as cur:
         status = await geocoder._check_initialization_status(cur)
 
@@ -135,8 +153,8 @@ async def test_check_initialization_missing_index(test_db):
 
 async def test_check_initialization_complete(test_db):
     """Test initialization check with a properly initialized database."""
-    geocoder = AsyncNearestCity(test_db)
-    await geocoder.initialize()
+    async with AsyncNearestCity(test_db) as geocoder:
+        await geocoder.initialize()
 
     async with test_db.cursor() as cur:
         status = await geocoder._check_initialization_status(cur)
@@ -147,13 +165,26 @@ async def test_check_initialization_complete(test_db):
     assert status.has_data
 
 
+async def test_init_db_at_startup_then_query(test_db):
+    """Web servers have a startup lifecycle that could do the initialisation."""
+    async with AsyncNearestCity(test_db) as geocoder:
+        pass  # do nothing, initialisation is complete here
+
+    async with AsyncNearestCity() as geocoder:
+        location = await geocoder.query(40.7128, -74.0060)
+
+    assert location is not None
+    assert location.city == "New York City"
+    assert isinstance(location, Location)
+
+
 async def test_invalid_coordinates(test_db):
     """Test that invalid coordinates are properly handled."""
-    geocoder = AsyncNearestCity(test_db)
-    await geocoder.initialize()
+    async with AsyncNearestCity(test_db) as geocoder:
+        await geocoder.initialize()
 
-    with pytest.raises(ValueError):
-        await geocoder.query(91, 0)  # Invalid latitude
+        with pytest.raises(ValueError):
+            await geocoder.query(91, 0)  # Invalid latitude
 
-    with pytest.raises(ValueError):
-        await geocoder.query(0, 181)  # Invalid longitude
+        with pytest.raises(ValueError):
+            await geocoder.query(0, 181)  # Invalid longitude

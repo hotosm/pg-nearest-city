@@ -3,15 +3,15 @@
 import gzip
 import importlib.resources
 import logging
-from contextlib import asynccontextmanager
 from typing import Optional
+from textwrap import dedent, fill
 
 import psycopg
 from psycopg import AsyncCursor
 
-from pg_nearest_city import base_nearest_city
 from pg_nearest_city.base_nearest_city import (
     BaseNearestCity,
+    DbConfig,
     InitializationStatus,
     Location,
 )
@@ -22,35 +22,9 @@ logger = logging.getLogger("pg_nearest_city")
 class AsyncNearestCity:
     """Reverse geocoding to the nearest city over 1000 population."""
 
-    @classmethod
-    @asynccontextmanager
-    async def connect(cls, db: psycopg.AsyncConnection | base_nearest_city.DbConfig):
-        """Managed NearestCity instance with automatic initialization and cleanup.
-
-        Args:
-            db: Either a DbConfig for a new connection or an existing psycopg Connection
-        """
-        is_external_connection = isinstance(db, psycopg.AsyncConnection)
-
-        conn: psycopg.AsyncConnection
-
-        if is_external_connection:
-            conn = db
-        else:
-            conn = await psycopg.AsyncConnection.connect(db.get_connection_string())
-
-        geocoder = cls(conn)
-
-        try:
-            await geocoder.initialize()
-            yield geocoder
-        finally:
-            if not is_external_connection:
-                await conn.close()
-
     def __init__(
         self,
-        connection: psycopg.AsyncConnection,
+        db: psycopg.AsyncConnection | DbConfig | None = None,
         logger: Optional[logging.Logger] = None,
     ):
         """Initialize reverse geocoder with an existing AsyncConnection.
@@ -58,11 +32,14 @@ class AsyncNearestCity:
         Args:
             db: An existing psycopg AsyncConnection
             connection: psycopg.AsyncConnection
-            logger: Optional custom logger. If not provided, uses package logger
+            logger: Optional custom logger. If not provided, uses package logger.
         """
         # Allow users to provide their own logger while having a sensible default
         self._logger = logger or logging.getLogger("pg_nearest_city")
-        self.connection = connection
+        self._db = db
+        self.connection: psycopg.AsyncConnection = None
+        self._is_external_connection = False
+        self._is_initialized = False
 
         with importlib.resources.path(
             "pg_nearest_city.data", "cities_1000_simple.txt.gz"
@@ -73,8 +50,43 @@ class AsyncNearestCity:
         ) as voronoi_path:
             self.voronoi_file = voronoi_path
 
+    async def __aenter__(self):
+        """Open the context manager."""
+        self.connection = await self.get_connection(self._db)
+        # Create the relevant tables and validate
+        await self.initialize()
+        self._is_initialized = True
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        """Close the context manager."""
+        if self.connection and not self._is_external_connection:
+            await self.connection.close()
+        self._initialized = False
+
+    async def get_connection(
+        self,
+        db: Optional[psycopg.AsyncConnection | DbConfig] = None,
+    ) -> psycopg.AsyncConnection:
+        """Determine the database connection to use."""
+        self._is_external_connection = isinstance(db, psycopg.AsyncConnection)
+        is_db_config = isinstance(db, DbConfig)
+
+        if self._is_external_connection:
+            return db
+        elif is_db_config:
+            return await psycopg.AsyncConnection.connect(db.get_connection_string())
+        else:
+            # Fallback to env var extraction, or defaults for testing
+            return await psycopg.AsyncConnection.connect(
+                DbConfig().get_connection_string(),
+            )
+
     async def initialize(self) -> None:
         """Initialize the geocoding database with validation checks."""
+        if not self.connection:
+            self._inform_user_if_not_context_manager()
+
         try:
             async with self.connection.cursor() as cur:
                 self._logger.info("Starting database initialization check")
@@ -126,6 +138,20 @@ class AsyncNearestCity:
             self._logger.error("Database initialization failed: %s", str(e))
             raise RuntimeError(f"Database initialization failed: {str(e)}") from e
 
+    def _inform_user_if_not_context_manager(self):
+        """Raise an error if the context manager was not used."""
+        if not self._is_initialized:
+            raise RuntimeError(
+                fill(
+                    dedent("""
+                AsyncNearestCity must be used within 'async with' context.\n
+                    For example:\n
+                    async with AsyncNearestCity() as geocoder:\n
+                        details = geocoder.query(lat, lon)
+            """)
+                )
+            )
+
     async def query(self, lat: float, lon: float) -> Optional[Location]:
         """Find the nearest city to the given coordinates using Voronoi regions.
 
@@ -140,13 +166,16 @@ class AsyncNearestCity:
             ValueError: If coordinates are out of valid ranges
             RuntimeError: If database query fails
         """
+        # Throw an error if not used in 'with' block
+        self._inform_user_if_not_context_manager()
+
         # Validate coordinate ranges
         BaseNearestCity.validate_coordinates(lon, lat)
 
         try:
             async with self.connection.cursor() as cur:
                 await cur.execute(
-                    BaseNearestCity._get_reverse_geocoding_query(lon, lat)
+                    BaseNearestCity._get_reverse_geocoding_query(lon, lat),
                 )
                 result = await cur.fetchone()
 
@@ -164,7 +193,8 @@ class AsyncNearestCity:
             raise RuntimeError(f"Reverse geocoding failed: {str(e)}") from e
 
     async def _check_initialization_status(
-        self, cur: psycopg.AsyncCursor
+        self,
+        cur: psycopg.AsyncCursor,
     ) -> InitializationStatus:
         """Check the status and integrity of the geocoding database.
 
@@ -259,7 +289,7 @@ class AsyncNearestCity:
 
         # Import the binary WKB data
         async with cur.copy(
-            "COPY voronoi_import (city, country, wkb) FROM STDIN"
+            "COPY voronoi_import (city, country, wkb) FROM STDIN",
         ) as copy:
             with gzip.open(self.voronoi_file, "rb") as f:
                 while data := f.read(8192):
