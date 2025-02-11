@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 (2025-02-11)
+
+### Fix
+
+- add context managers via __enter__ methods, update usage
+- do not default use test db conn, error on missing vars
+
+### Refactor
+
+- use encode/httpcore unasync impl, restructure
+- fallback to env vars for NearestCity.connect(), esp in tests
+- export main classes in __init__.__all__ for pg_nearest_city pkg
+- lint all, add extra pre-commit hooks, allow env var db initialisation
+
 ## 0.1.0 (2025-02-08)
 
 ## 0.0.0 (2025-02-08)
