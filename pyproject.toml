@@ -43,6 +43,10 @@ docs = [
     "mkdocs-material>=9.5.49",
     "mkdocstrings-python>=1.13.0",
 ]
+dev = [
+    "psutil>=6.1.1",
+    "reverse-geocoder>=1.5.1",
+]
 
 [build-system]
 requires = ["hatchling"]
