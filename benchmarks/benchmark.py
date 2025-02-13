@@ -1,5 +1,4 @@
-from dataclasses import dataclass
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 import asyncio
 from benchmarker_lib import BenchmarkSession
 
@@ -95,7 +94,7 @@ def generate_test_points(count: int = 10000) -> List[Tuple[float, float]]:
     points = [
         (random.uniform(-90, 90), random.uniform(-180, 180)) for _ in range(count)
     ]
-    random.seed() 
+    random.seed()
     return points
 
 
