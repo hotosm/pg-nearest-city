@@ -63,3 +63,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  benchmark:
+    image: "ghcr.io/hotosm/pg-nearest-city:${TAG_OVERRIDE:-ci}"
+    build:
+      target: ci
+    container_name: pg-nearest-city-benchmark
+    volumes:
+      # Mount project config
+      - ./pyproject.toml:/data/pyproject.toml:ro
+      # Mount local package
+      - ./pg_nearest_city:/opt/python/lib/python3.10/site-packages/pg_nearest_city:ro
+      # Mount benchmarks directory
+      - ./benchmarks:/data/benchmarks
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - net
+    restart: "no"
+    environment:
+      - PGNEAREST_DB_HOST=db
+      - PGNEAREST_DB_USER=cities
+      - PGNEAREST_DB_PASSWORD=dummycipassword
+      - PGNEAREST_DB_NAME=cities
+    command: "python /data/benchmarks/benchmark.py"
