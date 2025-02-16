@@ -25,6 +25,9 @@ services:
     build:
       target: ci
     container_name: pg-nearest-city
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       # Mount project config
       - ./pyproject.toml:/data/pyproject.toml:ro
@@ -37,9 +40,6 @@ services:
       - PGNEAREST_DB_USER=cities
       - PGNEAREST_DB_PASSWORD=dummycipassword
       - PGNEAREST_DB_NAME=cities
-    depends_on:
-      db:
-        condition: service_healthy
     networks:
       - net
     restart: "no"
@@ -66,9 +66,11 @@ services:
 
   benchmark:
     image: "ghcr.io/hotosm/pg-nearest-city:${TAG_OVERRIDE:-ci}"
-    build:
-      target: ci
+    profiles: [benchmark]
     container_name: pg-nearest-city-benchmark
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       # Mount project config
       - ./pyproject.toml:/data/pyproject.toml:ro
@@ -76,15 +78,13 @@ services:
       - ./pg_nearest_city:/opt/python/lib/python3.10/site-packages/pg_nearest_city:ro
       # Mount benchmarks directory
       - ./benchmarks:/data/benchmarks
-    depends_on:
-      db:
-        condition: service_healthy
     networks:
       - net
-    restart: "no"
     environment:
       - PGNEAREST_DB_HOST=db
       - PGNEAREST_DB_USER=cities
       - PGNEAREST_DB_PASSWORD=dummycipassword
       - PGNEAREST_DB_NAME=cities
+    restart: "no"
+    user: root
     command: "python /data/benchmarks/benchmark.py"
