@@ -61,3 +61,4 @@ nav:
       - Code of Conduct: https://docs.hotosm.org/code-of-conduct
       - Versioning: https://docs.hotosm.org/dev-guide/repo-management/version-control/#creating-releases
   - API: api.md
+  - Benchmarks: benchmark-results.md
