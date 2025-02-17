@@ -1,9 +1,9 @@
 """Main logic."""
 
 import gzip
-import importlib.resources
 import logging
 from typing import Optional
+from importlib import resources
 from textwrap import dedent, fill
 
 import psycopg
@@ -41,14 +41,12 @@ class NearestCity:
         self._is_external_connection = False
         self._is_initialized = False
 
-        with importlib.resources.path(
-            "pg_nearest_city.data", "cities_1000_simple.txt.gz"
-        ) as cities_path:
-            self.cities_file = cities_path
-        with importlib.resources.path(
-            "pg_nearest_city.data", "voronois.wkb.gz"
-        ) as voronoi_path:
-            self.voronoi_file = voronoi_path
+        self.cities_file = resources.files("pg_nearest_city.data").joinpath(
+            "cities_1000_simple.txt.gz"
+        )
+        self.voronoi_file = resources.files("pg_nearest_city.data").joinpath(
+            "voronois.wkb.gz"
+        )
 
     def __enter__(self):
         """Open the context manager."""
