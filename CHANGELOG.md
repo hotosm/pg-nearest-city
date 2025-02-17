@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 (2025-02-17)
+
+### Fix
+
+- replace deprecated importlib .path method with .files() API
+
 ## 0.2.0 (2025-02-11)
 
 ### Fix

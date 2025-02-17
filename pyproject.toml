@@ -1,6 +1,6 @@
 [project]
 name = "pg-nearest-city"
-version = "0.2.0"
+version = "0.2.1"
 description = "Given a geopoint, find the nearest city using PostGIS (reverse geocode)."
 authors = [
     {name = "Sam Woodcock", email = "sam.woodcock@hotosm.org"},
@@ -88,7 +88,7 @@ asyncio_default_fixture_loop_scope="function"
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.2.0"
+version = "0.2.1"
 version_files = [
     "pyproject.toml:version",
     "pg_nearest_city/__version__.py",
