@@ -83,7 +83,9 @@ See [benchmarks](./benchmark-results.md) for more details.
 
 ### How This Package Works
 
-- Ingest geonames.org data for cities over 1000 population.
+- Ingest
+  [geonames.org](https://data.opendatasoft.com/explore/dataset/geonames-all-cities-with-a-population-1000%40public/export/?disjunctive.cou_name_en)
+  CSV data for cities over 1000 population.
 - Create voronoi polygons based on city geopoints.
 - Bundle the voronoi data with this package and load into Postgis.
 - Query the loaded voronoi data with a given geopoint, returning the city.
