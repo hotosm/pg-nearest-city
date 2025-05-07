@@ -202,7 +202,11 @@ docker compose run --rm benchmark
 
 ### Overview
 
-The pg-nearest-city package includes a Voronoi generator that creates the data used for efficient reverse geocoding. This utility downloads city data from GeoNames, processes it through PostGIS to compute Voronoi polygons, and exports the results as compressed WKB files that are bundled with the package.
+The pg-nearest-city package includes a Voronoi generator that creates the
+data used for efficient reverse geocoding. This utility downloads city
+data from GeoNames, processes it through PostGIS to compute Voronoi polygons,
+and exports the results as compressed WKB files that are bundled with the
+package.
 
 ### Data Generation
 
@@ -230,7 +234,8 @@ The generator accepts the following configuration options:
 
 ### Updating Data
 
-The pre-generated data files are bundled with the package, so manual regeneration is only necessary when:
+The pre-generated data files are bundled with the package,
+so manual regeneration is only necessary when:
 
 - New GeoNames data becomes available and you want to update
 - You need to filter for a specific geographic region
