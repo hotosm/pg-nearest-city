@@ -14,11 +14,9 @@
 #     You should have received a copy of the GNU General Public License
 #     along with pg-nearest-city.  If not, see <https:#www.gnu.org/licenses/>.
 #
-
 networks:
   net:
     name: pg-nearest-city
-
 services:
   code:
     image: "ghcr.io/hotosm/pg-nearest-city:${TAG_OVERRIDE:-ci}"
@@ -44,7 +42,6 @@ services:
       - net
     restart: "no"
     command: "pytest"
-
   db:
     image: "postgis/postgis:17-3.5-alpine"
     container_name: pg-nearest-city-db
@@ -63,7 +60,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-
   benchmark:
     image: "ghcr.io/hotosm/pg-nearest-city:${TAG_OVERRIDE:-ci}"
     profiles: [benchmark]
@@ -88,3 +84,29 @@ services:
     restart: "no"
     user: root
     command: "python /data/benchmarks/benchmark.py"
+  voronoi-generator:
+      image: "ghcr.io/hotosm/pg-nearest-city:${TAG_OVERRIDE:-ci}"
+      profiles: [data-generation]
+      container_name: pg-nearest-city-voronoi-generator
+      depends_on:
+        db:
+          condition: service_healthy
+      volumes:
+        # Mount project config
+        - ./pyproject.toml:/data/pyproject.toml:ro
+        # Mount local package
+        - ./pg_nearest_city:/opt/python/lib/python3.10/site-packages/pg_nearest_city:ro
+        # Mount scripts directory
+        - ./pg_nearest_city/scripts:/data/scripts:ro
+        # Mount output directory (where generated files will be saved)
+        - ./pg_nearest_city/data:/data/output
+      networks:
+        - net
+      environment:
+        - PGNEAREST_DB_HOST=db
+        - PGNEAREST_DB_USER=cities
+        - PGNEAREST_DB_PASSWORD=dummycipassword
+        - PGNEAREST_DB_NAME=cities
+      restart: "no"
+      user: root
+      command: "python /data/scripts/voronoi_generator.py --output-dir /data/output"
