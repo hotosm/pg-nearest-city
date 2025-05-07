@@ -23,6 +23,9 @@
   <a href="https://pypistats.org/packages/pg-nearest-city" target="_blank">
       <img src="https://img.shields.io/pypi/dm/pg-nearest-city.svg" alt="Downloads">
   </a>
+  <a href="https://results.pre-commit.ci/latest/github/hotosm/pg-nearest-city/main" target="_blank">
+      <img src="https://results.pre-commit.ci/badge/github/hotosm/pg-nearest-city/main.svg" alt="Pre-Commit">
+  </a>
   <a href="https://github.com/hotosm/pg-nearest-city/blob/main/LICENSE.md" target="_blank">
       <img src="https://img.shields.io/github/license/hotosm/pg-nearest-city.svg" alt="License">
   </a>
