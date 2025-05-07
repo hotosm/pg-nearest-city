@@ -55,4 +55,4 @@ repos:
     rev: v0.44.0
     hooks:
       - id: markdownlint
-        args: [--fix, --ignore, CHANGELOG.md]
+        args: [--fix, --ignore, CHANGELOG.md, --ignore, LICENSE.md]
