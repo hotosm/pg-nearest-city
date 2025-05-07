@@ -1,4 +1,4 @@
-"""Generates the voronois.wkb file for pg-nearest-city
+"""Generates the voronois.wkb file for pg-nearest-city.
 
 This script downloads GeoNames data, processes it through PostGIS to compute
 Voronoi polygons, and exports them as WKB for use with the pg-nearest-city package.
@@ -59,6 +59,7 @@ class VoronoiGenerator:
     """Generates Voronoi WKB files from GeoNames data."""
 
     def __init__(self, config: Config, logger: Optional[logging.Logger] = None):
+        """Initialise class."""
         self.config = config
         self.logger = logger or logging.getLogger("voronoi_generator")
         self.temp_dir = None
@@ -97,7 +98,8 @@ class VoronoiGenerator:
             self.logger.error(f"Pipeline failed: {str(e)}")
             raise
         finally:
-            # Cleanup is also handled by atexit, but we do it here as well for good measure
+            # Cleanup is also handled by atexit, but we do it here as well
+            # for good measure
             self._cleanup_temp_dir()
 
     def _cleanup_temp_dir(self):
@@ -127,7 +129,9 @@ class VoronoiGenerator:
                         country varchar,
                         lat decimal,
                         lon decimal,
-                        geom geometry(Point,4326) GENERATED ALWAYS AS (ST_SetSRID(ST_MakePoint(lon, lat), 4326)) STORED,
+                        geom geometry(Point,4326) GENERATED ALWAYS AS (
+                          ST_SetSRID(ST_MakePoint(lon, lat), 4326)
+                        ) STORED,
                         voronoi geometry(Polygon,4326)
                     );
                 """)
@@ -179,7 +183,10 @@ class VoronoiGenerator:
         self.logger.info("Cleaning data to simplified format")
         try:
             # Extract columns 2 (city), 9 (country), 5 (lat), 6 (lon)
-            awk_cmd = f'awk -F\'\\t\' \'{{print $2"\\t"$9"\\t"$5"\\t"$6}}\' {raw_file} > {clean_file}'
+            awk_cmd = (
+                f'awk -F\'\\t\' \'{{print $2"\\t"$9"\\t"$5"\\t"$6}}\' '
+                f"{raw_file} > {clean_file}"
+            )
             subprocess.run(awk_cmd, shell=True, check=True)
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to clean data: {e}")
@@ -229,7 +236,10 @@ class VoronoiGenerator:
                 # Use COPY for efficient import
                 with open(clean_file, "r") as f:
                     with cur.copy(
-                        "COPY geocoding(city, country, lat, lon) FROM STDIN DELIMITER E'\\t'"
+                        """
+                        COPY geocoding(city, country, lat, lon)
+                        FROM STDIN DELIMITER E'\\t'
+                        """
                     ) as copy:
                         for line in f:
                             copy.write(line)
@@ -299,7 +309,10 @@ class VoronoiGenerator:
 
                 # Verify results
                 cur.execute(
-                    "SELECT COUNT(*) as with_voronoi FROM geocoding WHERE voronoi IS NOT NULL"
+                    """
+                    SELECT COUNT(*) as with_voronoi
+                    FROM geocoding WHERE voronoi IS NOT NULL
+                    """
                 )
                 with_voronoi = cur.fetchone()["with_voronoi"]
 
@@ -310,7 +323,8 @@ class VoronoiGenerator:
 
                 if with_voronoi < total:
                     self.logger.warning(
-                        f"Warning: {total - with_voronoi} records did not get Voronoi polygons"
+                        f"Warning: {total - with_voronoi} records "
+                        "did not get Voronoi polygons"
                     )
 
                 if with_voronoi == 0:
@@ -341,7 +355,10 @@ class VoronoiGenerator:
                 # Export using copy command
                 with open(temp_wkb, "wb") as f:
                     with cur.copy(
-                        "COPY (SELECT city, country, ST_AsBinary(voronoi) FROM geocoding WHERE voronoi IS NOT NULL) TO STDOUT"
+                        """
+                        COPY (SELECT city, country, ST_AsBinary(voronoi)
+                        FROM geocoding WHERE voronoi IS NOT NULL) TO STDOUT
+                        """
                     ) as copy:
                         for data in copy:
                             f.write(data)
@@ -469,7 +486,8 @@ if __name__ == "__main__":
         logger.info("\nOutput files created:")
         logger.info(f"  - {config.output_dir}/cities_1000_simple.txt.gz")
         logger.info(
-            f"  - {config.output_dir}/voronois.wkb{'.gz' if config.compress_output else ''}"
+            f"  - {config.output_dir}/voronois.wkb"
+            f"{'.gz' if config.compress_output else ''}"
         )
         logger.info("\nThese files are ready for use with the pg-nearest-city package.")
     except Exception as e:
