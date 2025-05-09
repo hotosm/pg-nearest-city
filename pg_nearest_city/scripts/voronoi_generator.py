@@ -37,6 +37,7 @@ class Config:
 
     # Data sources
     geonames_url: str = "http://download.geonames.org/export/dump/cities1000.zip"
+    _zip_path: str = ""
 
     # Output configuration
     output_dir: Path = Path("/data/output")  # Default output directory
@@ -77,13 +78,18 @@ class VoronoiGenerator:
             # Ensure output directories exist
             self.config.ensure_output_directories()
 
+            if not self.config._zip_path or not Path(self.config._zip_path).is_file():
+                self._download_data()
+                self.config._zip_path = ""
+            self._extract_data()
+            self._clean_data()
+
             # Connect to database
             with psycopg.connect(
                 self.config.get_connection_string(), row_factory=dict_row
             ) as conn:
                 # Run each stage with the same connection
                 self._setup_database(conn)
-                self._download_and_clean_data()
                 self._import_data(conn)
                 self._create_spatial_index(conn)
                 self._compute_voronoi(conn)
@@ -148,12 +154,35 @@ class VoronoiGenerator:
                 self.logger.error(f"Database setup error: {e}")
                 raise
 
-    def _download_and_clean_data(self):
-        """Download and clean GeoNames data to the simplified format."""
+    def _download_data(self):
+        """Download GeoNames data."""
         self.logger.info(f"Downloading data from {self.config.geonames_url}")
 
-        # Define paths using pathlib.Path
         zip_path = self.temp_dir / "cities1000.zip"
+
+        try:
+            urllib.request.urlretrieve(self.config.geonames_url, zip_path)
+        except Exception as e:
+            self.logger.error(f"Failed to download data: {e}")
+            raise
+
+    def _extract_data(self):
+        """Extract GeoNames data."""
+        zip_path = self.temp_dir / "cities1000.zip"
+
+        if self.config._zip_path:
+            shutil.copy2(self.config._zip_path, zip_path)
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(self.temp_dir)
+        except Exception as e:
+            self.logger.error(f"Failed to extract zip file: {e}")
+            raise
+
+    def _clean_data(self):
+        """Clean GeoNames data to the simplified format."""
+        self.logger.info("Cleaning data to simplified format")
+
         raw_file = self.temp_dir / "cities1000.txt"
         clean_file = self.temp_dir / "cities_clean.txt"
 
@@ -164,22 +193,6 @@ class VoronoiGenerator:
         # Output path for the package
         output_cities_gz = self.config.output_dir / "cities_1000_simple.txt.gz"
 
-        # Download files
-        try:
-            urllib.request.urlretrieve(self.config.geonames_url, zip_path)
-        except Exception as e:
-            self.logger.error(f"Failed to download data: {e}")
-            raise
-
-        # Extract zip file
-        try:
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(self.temp_dir)
-        except Exception as e:
-            self.logger.error(f"Failed to extract zip file: {e}")
-            raise
-
-        self.logger.info("Cleaning data to simplified format")
         try:
             with open(raw_file, "r", newline="") as f:
                 tsv_raw = [x for x in csv.reader(f, delimiter="\t", escapechar="\\")]
@@ -460,6 +473,9 @@ def parse_args():
         "--no-compress", action="store_true", help="Don't compress output"
     )
     parser.add_argument("--country", help="Filter to specific country code (e.g. IT)")
+    parser.add_argument(
+        "--zip-path", help="Path to existing cities1000.zip (avoids re-downloading)"
+    )
 
     return parser.parse_args()
 
@@ -486,6 +502,8 @@ if __name__ == "__main__":
         config.db_user = args.db_user
     if args.db_password:
         config.db_password = args.db_password
+    if args.zip_path:
+        config._zip_path = args.zip_path
 
     generator = VoronoiGenerator(config, logger)
 
