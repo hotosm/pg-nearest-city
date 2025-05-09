@@ -14,11 +14,11 @@ import os
 import shutil
 import sys
 import tempfile
+import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import urllib.request
-import zipfile
 
 import psycopg
 from psycopg.rows import dict_row
