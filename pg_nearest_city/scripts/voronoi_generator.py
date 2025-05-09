@@ -256,28 +256,27 @@ class VoronoiGenerator:
             raise FileNotFoundError(f"Clean data file not found: {clean_file}")
 
         with conn.cursor() as cur:
+            copy_stmt = [
+                "COPY geocoding(city, country, lat, lon) FROM STDIN DELIMITER E'\\t'"
+            ]
+            # Apply country filter if specified
+            if self.config.country_filter:
+                self.logger.info(f"Filtering for country: {self.config.country_filter}")
+                copy_stmt.append("WHERE country = %s")
             try:
                 # Use COPY for efficient import
                 with open(clean_file, "r") as f:
-                    with cur.copy(
-                        """
-                        COPY geocoding(city, country, lat, lon)
-                        FROM STDIN DELIMITER E'\\t'
-                        """
-                    ) as copy:
-                        for line in f:
-                            copy.write(line)
-
-                # Apply country filter if specified
-                if self.config.country_filter:
-                    self.logger.info(
-                        f"Filtering for country: {self.config.country_filter}"
-                    )
-                    cur.execute(
-                        "DELETE FROM geocoding WHERE country != %s",
-                        (self.config.country_filter,),
-                    )
-
+                    if self.config.country_filter:
+                        with cur.copy(
+                            " ".join(copy_stmt),
+                            (self.config.country_filter,),
+                        ) as copy:
+                            for line in f:
+                                copy.write(line)
+                    else:
+                        with cur.copy(" ".join(copy_stmt)) as copy:
+                            for line in f:
+                                copy.write(line)
                 conn.commit()
 
                 # Log record count
