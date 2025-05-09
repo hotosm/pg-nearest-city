@@ -7,11 +7,11 @@ Voronoi polygons, and exports them as WKB for use with the pg-nearest-city packa
 
 import argparse
 import atexit
+import csv
 import gzip
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -179,16 +179,27 @@ class VoronoiGenerator:
             self.logger.error(f"Failed to extract zip file: {e}")
             raise
 
-        # Clean data using awk
         self.logger.info("Cleaning data to simplified format")
         try:
+            with open(raw_file, "r", newline="") as f:
+                tsv_raw = [x for x in csv.reader(f, delimiter="\t", escapechar="\\")]
+        except csv.Error as e:
+            self.logger.error(f"Failed to import data for cleaning: {e}")
+            raise
+        try:
             # Extract columns 2 (city), 9 (country), 5 (lat), 6 (lon)
-            awk_cmd = (
-                f'awk -F\'\\t\' \'{{print $2"\\t"$9"\\t"$5"\\t"$6}}\' '
-                f"{raw_file} > {clean_file}"
-            )
-            subprocess.run(awk_cmd, shell=True, check=True)
-        except subprocess.CalledProcessError as e:
+            with open(clean_file, "w", newline="") as f:
+                writer = csv.writer(
+                    f,
+                    delimiter="\t",
+                    lineterminator="\n",
+                    quoting=csv.QUOTE_NONE,
+                    escapechar="\\",
+                    doublequote=True,
+                )
+                for row in tsv_raw:
+                    writer.writerow([row[1], row[8], row[4], row[5]])
+        except csv.Error as e:
             self.logger.error(f"Failed to clean data: {e}")
             raise
 
