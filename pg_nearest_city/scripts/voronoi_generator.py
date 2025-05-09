@@ -12,7 +12,6 @@ import gzip
 import logging
 import os
 import shutil
-import sys
 import tempfile
 import urllib.request
 import zipfile
@@ -114,7 +113,7 @@ class VoronoiGenerator:
             try:
                 shutil.rmtree(self.temp_dir)
                 self.logger.info(f"Cleaned up temporary directory: {self.temp_dir}")
-            except Exception as e:
+            except (FileNotFoundError, OSError, PermissionError) as e:
                 self.logger.warning(f"Failed to clean up temporary directory: {e}")
 
     def _setup_database(self, conn):
@@ -162,7 +161,7 @@ class VoronoiGenerator:
 
         try:
             urllib.request.urlretrieve(self.config.geonames_url, zip_path)
-        except Exception as e:
+        except urllib.error.URLError as e:
             self.logger.error(f"Failed to download data: {e}")
             raise
 
@@ -175,7 +174,7 @@ class VoronoiGenerator:
         try:
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 zip_ref.extractall(self.temp_dir)
-        except Exception as e:
+        except (FileNotFoundError, PermissionError, zipfile.BadZipFile) as e:
             self.logger.error(f"Failed to extract zip file: {e}")
             raise
 
@@ -239,7 +238,7 @@ class VoronoiGenerator:
                     f"Failed to save cities data: {output_cities_gz}"
                 )
 
-        except Exception as e:
+        except (OSError, PermissionError) as e:
             self.logger.error(f"Failed to create simplified data: {e}")
             raise
 
@@ -346,8 +345,7 @@ class VoronoiGenerator:
 
                 if with_voronoi < total:
                     self.logger.warning(
-                        f"Warning: {total - with_voronoi} records "
-                        "did not get Voronoi polygons"
+                        f"{total - with_voronoi} records did not get Voronoi polygons"
                     )
 
                 if with_voronoi == 0:
@@ -460,18 +458,20 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate Voronoi WKB file from GeoNames data"
     )
-    parser.add_argument("--db-host", help="Database host")
-    parser.add_argument("--db-port", type=int, help="Database port")
-    parser.add_argument("--db-name", help="Database name")
-    parser.add_argument("--db-user", help="Database username")
-    parser.add_argument("--db-password", help="Database password")
-    parser.add_argument(
-        "--output-dir", default="/data/output", help="Directory for output files"
-    )
+    group_db = parser.add_argument_group("group_db")
+    group_db.add_argument("--db-host", help="Database host")
+    group_db.add_argument("--db-port", type=int, help="Database port")
+    group_db.add_argument("--db-name", help="Database name")
+    group_db.add_argument("--db-user", help="Database username")
+    group_db.add_argument("--db-password", help="Database password")
+
+    parser.add_argument("--country", help="Filter to specific country code (e.g. IT)")
     parser.add_argument(
         "--no-compress", action="store_true", help="Don't compress output"
     )
-    parser.add_argument("--country", help="Filter to specific country code (e.g. IT)")
+    parser.add_argument(
+        "--output-dir", default="/data/output", help="Directory for output files"
+    )
     parser.add_argument(
         "--zip-path", help="Path to existing cities1000.zip (avoids re-downloading)"
     )
@@ -491,18 +491,12 @@ if __name__ == "__main__":
     )
 
     # Override config with command line args if provided
-    if args.db_host:
-        config.db_host = args.db_host
-    if args.db_port:
-        config.db_port = args.db_port
-    if args.db_name:
-        config.db_name = args.db_name
-    if args.db_user:
-        config.db_user = args.db_user
-    if args.db_password:
-        config.db_password = args.db_password
-    if args.zip_path:
-        config._zip_path = args.zip_path
+    config.db_host = args.db_host or config.db_host
+    config.db_port = args.db_port or config.db_port
+    config.db_name = args.db_name or config.db_name
+    config.db_user = args.db_user or config.db_user
+    config.db_password = args.db_password or config.db_password
+    config._zip_path = args.zip_path or config._zip_path
 
     generator = VoronoiGenerator(config, logger)
 
@@ -520,4 +514,4 @@ if __name__ == "__main__":
         logger.info("\nThese files are ready for use with the pg-nearest-city package.")
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
-        sys.exit(1)
+        raise SystemExit(1) from e
