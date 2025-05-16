@@ -127,7 +127,8 @@ class VoronoiGenerator:
                 for table in get_tables_in_creation_order():
                     if table.drop_first:
                         cur.execute(
-                            f"DROP TABLE {'IF EXISTS' if table.safe_ops else ''} {table.name}"
+                            f"DROP TABLE {'IF EXISTS' if table.safe_ops else ''} "
+                            f"{table.name}"
                         )
                     if table.safe_ops:
                         cur.execute(
@@ -151,7 +152,7 @@ class VoronoiGenerator:
                 raise
 
     def _setup_country_table(self, conn):
-        """Import data to the country lookup table, ignoring duplicates"""
+        """Import data to the country lookup table, ignoring duplicates."""
         self.logger.info("Importing data to `country`")
 
         with conn.cursor() as cur:
@@ -289,10 +290,10 @@ class VoronoiGenerator:
             self.logger.error(f"Clean data file not found: {clean_file}")
             raise FileNotFoundError(f"Clean data file not found: {clean_file}")
 
+        copy_stmt = [
+            "COPY geocoding(city, country_code, lat, lon) FROM STDIN DELIMITER E'\\t'"
+        ]
         with conn.cursor() as cur:
-            copy_stmt = [
-                "COPY geocoding(city, country_code, lat, lon) FROM STDIN DELIMITER E'\\t'"
-            ]
             # Apply country filter if specified
             if self.config.country_filter:
                 self.logger.info(f"Filtering for country: {self.config.country_filter}")

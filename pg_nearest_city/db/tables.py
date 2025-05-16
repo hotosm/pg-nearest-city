@@ -1,3 +1,5 @@
+"""DB models and raw import data."""
+
 from __future__ import annotations
 
 import inspect
@@ -6,6 +8,8 @@ from typing import ClassVar, Optional, Type
 
 
 class BaseTable:
+    """Base table class."""
+
     name: ClassVar[str]
     depends_on: ClassVar[Optional[Type[BaseTable]]]
     drop_first: ClassVar[bool]
@@ -14,6 +18,8 @@ class BaseTable:
 
 
 class Country(BaseTable):
+    """Country table class - lookup table."""
+
     name: ClassVar[str] = "country"
     depends_on: ClassVar[Optional[Type[BaseTable]]] = None
     drop_first: ClassVar[bool] = False
@@ -35,6 +41,8 @@ class Country(BaseTable):
 
 
 class Geocoding(BaseTable):
+    """Geocoding table class - main table."""
+
     name: ClassVar[str] = "geocoding"
     depends_on: ClassVar[Optional[Type[BaseTable]]] = Country
     drop_first: ClassVar[bool] = True
