@@ -7,20 +7,20 @@ Voronoi polygons, and exports them as WKB for use with the pg-nearest-city packa
 
 import argparse
 import atexit
+import csv
 import gzip
 import logging
 import os
 import shutil
-import subprocess
-import sys
 import tempfile
+import urllib.request
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-import urllib.request
-import zipfile
 
 import psycopg
+from pg_nearest_city.db.tables import get_tables_in_creation_order
 from psycopg.rows import dict_row
 
 
@@ -37,6 +37,7 @@ class Config:
 
     # Data sources
     geonames_url: str = "http://download.geonames.org/export/dump/cities1000.zip"
+    _zip_path: str = ""
 
     # Output configuration
     output_dir: Path = Path("/data/output")  # Default output directory
@@ -77,13 +78,19 @@ class VoronoiGenerator:
             # Ensure output directories exist
             self.config.ensure_output_directories()
 
+            if not self.config._zip_path or not Path(self.config._zip_path).is_file():
+                self._download_data()
+                self.config._zip_path = ""
+            self._extract_data()
+            self._clean_data()
+
             # Connect to database
             with psycopg.connect(
                 self.config.get_connection_string(), row_factory=dict_row
             ) as conn:
                 # Run each stage with the same connection
                 self._setup_database(conn)
-                self._download_and_clean_data()
+                self._setup_country_table(conn)
                 self._import_data(conn)
                 self._create_spatial_index(conn)
                 self._compute_voronoi(conn)
@@ -108,7 +115,7 @@ class VoronoiGenerator:
             try:
                 shutil.rmtree(self.temp_dir)
                 self.logger.info(f"Cleaned up temporary directory: {self.temp_dir}")
-            except Exception as e:
+            except (FileNotFoundError, OSError, PermissionError) as e:
                 self.logger.warning(f"Failed to clean up temporary directory: {e}")
 
     def _setup_database(self, conn):
@@ -116,25 +123,20 @@ class VoronoiGenerator:
         self.logger.info("Setting up database schema")
         with conn.cursor() as cur:
             try:
-                # Ensure PostGIS extension is installed
-                cur.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
-
-                # Drop table if exists to ensure clean state
-                cur.execute("DROP TABLE IF EXISTS geocoding;")
-
-                # Create geocoding table
-                cur.execute("""
-                    CREATE TABLE geocoding (
-                        city varchar,
-                        country varchar,
-                        lat decimal,
-                        lon decimal,
-                        geom geometry(Point,4326) GENERATED ALWAYS AS (
-                          ST_SetSRID(ST_MakePoint(lon, lat), 4326)
-                        ) STORED,
-                        voronoi geometry(Polygon,4326)
-                    );
-                """)
+                cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")
+                for table in get_tables_in_creation_order():
+                    if table.drop_first:
+                        cur.execute(
+                            f"DROP TABLE {'IF EXISTS' if table.safe_ops else ''} {table.name}"
+                        )
+                    if table.safe_ops:
+                        cur.execute(
+                            table.sql.replace(
+                                "CREATE TABLE", "CREATE TABLE IF NOT EXISTS"
+                            )
+                        )
+                    else:
+                        cur.execute(table.sql)
                 conn.commit()
                 self.logger.info("Database schema setup complete")
             except psycopg.errors.UndefinedFile as e:
@@ -148,12 +150,73 @@ class VoronoiGenerator:
                 self.logger.error(f"Database setup error: {e}")
                 raise
 
-    def _download_and_clean_data(self):
-        """Download and clean GeoNames data to the simplified format."""
+    def _setup_country_table(self, conn):
+        """Import data to the country lookup table, ignoring duplicates"""
+        self.logger.info("Importing data to `country`")
+
+        with conn.cursor() as cur:
+            copy_stmt = "COPY country_tmp FROM STDIN WITH (FORMAT CSV, HEADER)"
+            prep_stmt = [
+                [
+                    "CREATE TEMP TABLE country_tmp",
+                    "ON COMMIT DROP",
+                    "AS SELECT *",
+                    "FROM country WITH NO DATA",
+                ],
+                [
+                    "INSERT INTO country",
+                    "SELECT *",
+                    "FROM country_tmp",
+                    "ORDER BY alpha2",
+                    "ON CONFLICT",
+                    "DO NOTHING",
+                ],
+            ]
+            iso_path = (
+                Path(__file__).resolve().parent.parent.joinpath("db/iso-3166-1.csv.gz")
+            )
+            try:
+                cur.execute(" ".join(prep_stmt[0]))
+                with gzip.open(iso_path, "r") as f:
+                    with cur.copy(copy_stmt) as copy:
+                        for line in f:
+                            copy.write(line)
+            except Exception as e:
+                conn.rollback()
+                self.logger.error(f"Failed to import data: {e}")
+                raise
+            cur.execute(" ".join(prep_stmt[1]))
+            conn.commit()
+
+    def _download_data(self):
+        """Download GeoNames data."""
         self.logger.info(f"Downloading data from {self.config.geonames_url}")
 
-        # Define paths using pathlib.Path
         zip_path = self.temp_dir / "cities1000.zip"
+
+        try:
+            urllib.request.urlretrieve(self.config.geonames_url, zip_path)
+        except urllib.error.URLError as e:
+            self.logger.error(f"Failed to download data: {e}")
+            raise
+
+    def _extract_data(self):
+        """Extract GeoNames data."""
+        zip_path = self.temp_dir / "cities1000.zip"
+
+        if self.config._zip_path:
+            shutil.copy2(self.config._zip_path, zip_path)
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(self.temp_dir)
+        except (FileNotFoundError, PermissionError, zipfile.BadZipFile) as e:
+            self.logger.error(f"Failed to extract zip file: {e}")
+            raise
+
+    def _clean_data(self):
+        """Clean GeoNames data to the simplified format."""
+        self.logger.info("Cleaning data to simplified format")
+
         raw_file = self.temp_dir / "cities1000.txt"
         clean_file = self.temp_dir / "cities_clean.txt"
 
@@ -164,31 +227,26 @@ class VoronoiGenerator:
         # Output path for the package
         output_cities_gz = self.config.output_dir / "cities_1000_simple.txt.gz"
 
-        # Download files
         try:
-            urllib.request.urlretrieve(self.config.geonames_url, zip_path)
-        except Exception as e:
-            self.logger.error(f"Failed to download data: {e}")
+            with open(raw_file, "r", newline="") as f:
+                tsv_raw = [x for x in csv.reader(f, delimiter="\t", escapechar="\\")]
+        except csv.Error as e:
+            self.logger.error(f"Failed to import data for cleaning: {e}")
             raise
-
-        # Extract zip file
-        try:
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(self.temp_dir)
-        except Exception as e:
-            self.logger.error(f"Failed to extract zip file: {e}")
-            raise
-
-        # Clean data using awk
-        self.logger.info("Cleaning data to simplified format")
         try:
             # Extract columns 2 (city), 9 (country), 5 (lat), 6 (lon)
-            awk_cmd = (
-                f'awk -F\'\\t\' \'{{print $2"\\t"$9"\\t"$5"\\t"$6}}\' '
-                f"{raw_file} > {clean_file}"
-            )
-            subprocess.run(awk_cmd, shell=True, check=True)
-        except subprocess.CalledProcessError as e:
+            with open(clean_file, "w", newline="") as f:
+                writer = csv.writer(
+                    f,
+                    delimiter="\t",
+                    lineterminator="\n",
+                    quoting=csv.QUOTE_NONE,
+                    escapechar="\\",
+                    doublequote=True,
+                )
+                for row in tsv_raw:
+                    writer.writerow([row[1], row[8], row[4], row[5]])
+        except csv.Error as e:
             self.logger.error(f"Failed to clean data: {e}")
             raise
 
@@ -215,7 +273,7 @@ class VoronoiGenerator:
                     f"Failed to save cities data: {output_cities_gz}"
                 )
 
-        except Exception as e:
+        except (OSError, PermissionError) as e:
             self.logger.error(f"Failed to create simplified data: {e}")
             raise
 
@@ -232,28 +290,27 @@ class VoronoiGenerator:
             raise FileNotFoundError(f"Clean data file not found: {clean_file}")
 
         with conn.cursor() as cur:
+            copy_stmt = [
+                "COPY geocoding(city, country_code, lat, lon) FROM STDIN DELIMITER E'\\t'"
+            ]
+            # Apply country filter if specified
+            if self.config.country_filter:
+                self.logger.info(f"Filtering for country: {self.config.country_filter}")
+                copy_stmt.append("WHERE country_code = %s")
             try:
                 # Use COPY for efficient import
                 with open(clean_file, "r") as f:
-                    with cur.copy(
-                        """
-                        COPY geocoding(city, country, lat, lon)
-                        FROM STDIN DELIMITER E'\\t'
-                        """
-                    ) as copy:
-                        for line in f:
-                            copy.write(line)
-
-                # Apply country filter if specified
-                if self.config.country_filter:
-                    self.logger.info(
-                        f"Filtering for country: {self.config.country_filter}"
-                    )
-                    cur.execute(
-                        "DELETE FROM geocoding WHERE country != %s",
-                        (self.config.country_filter,),
-                    )
-
+                    if self.config.country_filter:
+                        with cur.copy(
+                            " ".join(copy_stmt),
+                            (self.config.country_filter,),
+                        ) as copy:
+                            for line in f:
+                                copy.write(line)
+                    else:
+                        with cur.copy(" ".join(copy_stmt)) as copy:
+                            for line in f:
+                                copy.write(line)
                 conn.commit()
 
                 # Log record count
@@ -277,7 +334,7 @@ class VoronoiGenerator:
         with conn.cursor() as cur:
             try:
                 cur.execute(
-                    "CREATE INDEX geocoding_geom_idx ON geocoding USING GIST(geom);"
+                    "CREATE INDEX geocoding_geom_idx ON geocoding USING GIST(geom)"
                 )
                 conn.commit()
                 self.logger.info("Spatial index created")
@@ -292,18 +349,22 @@ class VoronoiGenerator:
         with conn.cursor() as cur:
             try:
                 # First create a temporary table with all Voronoi polygons
-                cur.execute("""
-                    CREATE TEMP TABLE voronoi_temp AS
+                cur.execute(
+                    """
+                    CREATE TEMP TABLE voronoi_temp ON COMMIT DROP AS
                     SELECT (ST_Dump(ST_VoronoiPolygons(ST_Collect(geom)))).geom
-                    FROM geocoding;
-                """)
+                    FROM geocoding
+                """
+                )
 
                 # Update the main table by matching points to their containing polygons
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE geocoding g SET voronoi = v.geom
                     FROM voronoi_temp v
-                    WHERE ST_Contains(v.geom, g.geom);
-                """)
+                    WHERE ST_Contains(v.geom, g.geom)
+                """
+                )
 
                 conn.commit()
 
@@ -323,8 +384,7 @@ class VoronoiGenerator:
 
                 if with_voronoi < total:
                     self.logger.warning(
-                        f"Warning: {total - with_voronoi} records "
-                        "did not get Voronoi polygons"
+                        f"{total - with_voronoi} records did not get Voronoi polygons"
                     )
 
                 if with_voronoi == 0:
@@ -356,7 +416,7 @@ class VoronoiGenerator:
                 with open(temp_wkb, "wb") as f:
                     with cur.copy(
                         """
-                        COPY (SELECT city, country, ST_AsBinary(voronoi)
+                        COPY (SELECT city, country_code, ST_AsBinary(voronoi)
                         FROM geocoding WHERE voronoi IS NOT NULL) TO STDOUT
                         """
                     ) as copy:
@@ -437,18 +497,23 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate Voronoi WKB file from GeoNames data"
     )
-    parser.add_argument("--db-host", help="Database host")
-    parser.add_argument("--db-port", type=int, help="Database port")
-    parser.add_argument("--db-name", help="Database name")
-    parser.add_argument("--db-user", help="Database username")
-    parser.add_argument("--db-password", help="Database password")
+    group_db = parser.add_argument_group("group_db")
+    group_db.add_argument("--db-host", help="Database host")
+    group_db.add_argument("--db-port", type=int, help="Database port")
+    group_db.add_argument("--db-name", help="Database name")
+    group_db.add_argument("--db-user", help="Database username")
+    group_db.add_argument("--db-password", help="Database password")
+
+    parser.add_argument("--country", help="Filter to specific country code (e.g. IT)")
+    parser.add_argument(
+        "--no-compress", action="store_true", help="Don't compress output"
+    )
     parser.add_argument(
         "--output-dir", default="/data/output", help="Directory for output files"
     )
     parser.add_argument(
-        "--no-compress", action="store_true", help="Don't compress output"
+        "--zip-path", help="Path to existing cities1000.zip (avoids re-downloading)"
     )
-    parser.add_argument("--country", help="Filter to specific country code (e.g. IT)")
 
     return parser.parse_args()
 
@@ -465,16 +530,12 @@ if __name__ == "__main__":
     )
 
     # Override config with command line args if provided
-    if args.db_host:
-        config.db_host = args.db_host
-    if args.db_port:
-        config.db_port = args.db_port
-    if args.db_name:
-        config.db_name = args.db_name
-    if args.db_user:
-        config.db_user = args.db_user
-    if args.db_password:
-        config.db_password = args.db_password
+    config.db_host = args.db_host or config.db_host
+    config.db_port = args.db_port or config.db_port
+    config.db_name = args.db_name or config.db_name
+    config.db_user = args.db_user or config.db_user
+    config.db_password = args.db_password or config.db_password
+    config._zip_path = args.zip_path or config._zip_path
 
     generator = VoronoiGenerator(config, logger)
 
@@ -492,4 +553,4 @@ if __name__ == "__main__":
         logger.info("\nThese files are ready for use with the pg-nearest-city package.")
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
-        sys.exit(1)
+        raise SystemExit(1) from e
