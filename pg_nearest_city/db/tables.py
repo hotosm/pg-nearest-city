@@ -18,13 +18,11 @@ class Country(BaseTable):
     depends_on: ClassVar[Optional[Type[BaseTable]]] = None
     drop_first: ClassVar[bool] = False
     safe_ops: ClassVar[bool] = True
-    sql: ClassVar[
-        str
-    ] = """
+    sql: ClassVar[str] = """
     CREATE TABLE country (
         alpha2 CHAR(2) NOT NULL,
         alpha3 CHAR(3) NOT NULL,
-        numeric CHAR(3) NOT NULL, 
+        numeric CHAR(3) NOT NULL,
         name TEXT NOT NULL,
         CONSTRAINT country_pkey PRIMARY KEY (alpha2),
         CONSTRAINT country_alpha3_unq UNIQUE (alpha3),
@@ -41,9 +39,7 @@ class Geocoding(BaseTable):
     depends_on: ClassVar[Optional[Type[BaseTable]]] = Country
     drop_first: ClassVar[bool] = True
     safe_ops: ClassVar[bool] = True
-    sql: ClassVar[
-        str
-    ] = """
+    sql: ClassVar[str] = """
     CREATE TABLE geocoding (
         id INT GENERATED ALWAYS AS IDENTITY NOT NULL,
         city TEXT NOT NULL,
