@@ -350,9 +350,7 @@ class VoronoiGenerator:
         self.logger.info("Creating B+tree index on country")
         with conn.cursor() as cur:
             try:
-                cur.execute(
-                    "CREATE INDEX geocoding_country_idx ON geocoding (country)"
-                )
+                cur.execute("CREATE INDEX geocoding_country_idx ON geocoding (country)")
                 conn.commit()
                 self.logger.info("country index created")
             except Exception as e:
