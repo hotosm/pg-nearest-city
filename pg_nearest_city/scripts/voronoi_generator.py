@@ -92,6 +92,7 @@ class VoronoiGenerator:
                 self._setup_database(conn)
                 self._setup_country_table(conn)
                 self._import_data(conn)
+                self._create_country_code_index(conn)
                 self._create_spatial_index(conn)
                 self._compute_voronoi(conn)
                 self._export_wkb(conn)
@@ -342,6 +343,21 @@ class VoronoiGenerator:
             except Exception as e:
                 conn.rollback()
                 self.logger.error(f"Failed to create spatial index: {e}")
+                raise
+
+    def _create_country_code_index(self, conn):
+        """Create index on geocoding.country_code for FK."""
+        self.logger.info("Creating B+tree index on country_code")
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    "CREATE INDEX geocoding_country_code_idx ON geocoding (country_code)"
+                )
+                conn.commit()
+                self.logger.info("country_code index created")
+            except Exception as e:
+                conn.rollback()
+                self.logger.error(f"Failed to create index on country_code: {e}")
                 raise
 
     def _compute_voronoi(self, conn):
