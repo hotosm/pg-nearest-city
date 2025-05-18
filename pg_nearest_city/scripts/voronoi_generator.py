@@ -92,7 +92,7 @@ class VoronoiGenerator:
                 self._setup_database(conn)
                 self._setup_country_table(conn)
                 self._import_data(conn)
-                self._create_country_code_index(conn)
+                self._create_country_index(conn)
                 self._create_spatial_index(conn)
                 self._compute_voronoi(conn)
                 self._export_wkb(conn)
@@ -292,13 +292,13 @@ class VoronoiGenerator:
             raise FileNotFoundError(f"Clean data file not found: {clean_file}")
 
         copy_stmt = [
-            "COPY geocoding(city, country_code, lat, lon) FROM STDIN DELIMITER E'\\t'"
+            "COPY geocoding(city, country, lat, lon) FROM STDIN DELIMITER E'\\t'"
         ]
         with conn.cursor() as cur:
             # Apply country filter if specified
             if self.config.country_filter:
                 self.logger.info(f"Filtering for country: {self.config.country_filter}")
-                copy_stmt.append("WHERE country_code = %s")
+                copy_stmt.append("WHERE country = %s")
             try:
                 # Use COPY for efficient import
                 with open(clean_file, "r") as f:
@@ -345,19 +345,19 @@ class VoronoiGenerator:
                 self.logger.error(f"Failed to create spatial index: {e}")
                 raise
 
-    def _create_country_code_index(self, conn):
-        """Create index on geocoding.country_code for FK."""
-        self.logger.info("Creating B+tree index on country_code")
+    def _create_country_index(self, conn):
+        """Create index on geocoding.country for FK."""
+        self.logger.info("Creating B+tree index on country")
         with conn.cursor() as cur:
             try:
                 cur.execute(
-                    "CREATE INDEX geocoding_country_code_idx ON geocoding (country_code)"
+                    "CREATE INDEX geocoding_country_idx ON geocoding (country)"
                 )
                 conn.commit()
-                self.logger.info("country_code index created")
+                self.logger.info("country index created")
             except Exception as e:
                 conn.rollback()
-                self.logger.error(f"Failed to create index on country_code: {e}")
+                self.logger.error(f"Failed to create index on country: {e}")
                 raise
 
     def _compute_voronoi(self, conn):
@@ -433,7 +433,7 @@ class VoronoiGenerator:
                 with open(temp_wkb, "wb") as f:
                     with cur.copy(
                         """
-                        COPY (SELECT city, country_code, ST_AsBinary(voronoi)
+                        COPY (SELECT city, country, ST_AsBinary(voronoi)
                         FROM geocoding WHERE voronoi IS NOT NULL) TO STDOUT
                         """
                     ) as copy:

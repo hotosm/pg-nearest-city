@@ -51,7 +51,7 @@ class Geocoding(BaseTable):
     CREATE TABLE geocoding (
         id INT GENERATED ALWAYS AS IDENTITY NOT NULL,
         city TEXT NOT NULL,
-        country_code CHAR(2) NOT NULL,
+        country CHAR(2) NOT NULL,
         lat DECIMAL NOT NULL,
         lon DECIMAL NOT NULL,
         geom GEOMETRY(Point,4326) GENERATED ALWAYS AS (
@@ -62,8 +62,8 @@ class Geocoding(BaseTable):
         CONSTRAINT geocoding_city_len_chk CHECK (
             char_length(city) <= 126
         ),
-        CONSTRAINT geocoding_country_code_fkey
-            FOREIGN KEY (country_code)
+        CONSTRAINT geocoding_country_fkey
+            FOREIGN KEY (country)
             REFERENCES country (alpha2)
             ON UPDATE RESTRICT
             ON DELETE RESTRICT
