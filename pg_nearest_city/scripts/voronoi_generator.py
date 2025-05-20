@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 import psycopg
+from pg_nearest_city.db.tables import get_tables_in_creation_order
 from psycopg.rows import dict_row
 
 
@@ -89,7 +90,9 @@ class VoronoiGenerator:
             ) as conn:
                 # Run each stage with the same connection
                 self._setup_database(conn)
+                self._setup_country_table(conn)
                 self._import_data(conn)
+                self._create_country_index(conn)
                 self._create_spatial_index(conn)
                 self._compute_voronoi(conn)
                 self._export_wkb(conn)
@@ -121,25 +124,21 @@ class VoronoiGenerator:
         self.logger.info("Setting up database schema")
         with conn.cursor() as cur:
             try:
-                # Ensure PostGIS extension is installed
-                cur.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
-
-                # Drop table if exists to ensure clean state
-                cur.execute("DROP TABLE IF EXISTS geocoding;")
-
-                # Create geocoding table
-                cur.execute("""
-                    CREATE TABLE geocoding (
-                        city varchar,
-                        country varchar,
-                        lat decimal,
-                        lon decimal,
-                        geom geometry(Point,4326) GENERATED ALWAYS AS (
-                          ST_SetSRID(ST_MakePoint(lon, lat), 4326)
-                        ) STORED,
-                        voronoi geometry(Polygon,4326)
-                    );
-                """)
+                cur.execute("CREATE EXTENSION IF NOT EXISTS postgis")
+                for table in get_tables_in_creation_order():
+                    if table.drop_first:
+                        cur.execute(
+                            f"DROP TABLE {'IF EXISTS' if table.safe_ops else ''} "
+                            f"{table.name}"
+                        )
+                    if table.safe_ops:
+                        cur.execute(
+                            table.sql.replace(
+                                "CREATE TABLE", "CREATE TABLE IF NOT EXISTS"
+                            )
+                        )
+                    else:
+                        cur.execute(table.sql)
                 conn.commit()
                 self.logger.info("Database schema setup complete")
             except psycopg.errors.UndefinedFile as e:
@@ -152,6 +151,44 @@ class VoronoiGenerator:
             except Exception as e:
                 self.logger.error(f"Database setup error: {e}")
                 raise
+
+    def _setup_country_table(self, conn):
+        """Import data to the country lookup table, ignoring duplicates."""
+        self.logger.info("Importing data to `country`")
+
+        with conn.cursor() as cur:
+            copy_stmt = "COPY country_tmp FROM STDIN WITH (FORMAT CSV, HEADER)"
+            prep_stmt = [
+                [
+                    "CREATE TEMP TABLE country_tmp",
+                    "ON COMMIT DROP",
+                    "AS SELECT *",
+                    "FROM country WITH NO DATA",
+                ],
+                [
+                    "INSERT INTO country",
+                    "SELECT *",
+                    "FROM country_tmp",
+                    "ORDER BY alpha2",
+                    "ON CONFLICT",
+                    "DO NOTHING",
+                ],
+            ]
+            iso_path = (
+                Path(__file__).resolve().parent.parent.joinpath("db/iso-3166-1.csv.gz")
+            )
+            try:
+                cur.execute(" ".join(prep_stmt[0]))
+                with gzip.open(iso_path, "r") as f:
+                    with cur.copy(copy_stmt) as copy:
+                        for line in f:
+                            copy.write(line)
+            except Exception as e:
+                conn.rollback()
+                self.logger.error(f"Failed to import data: {e}")
+                raise
+            cur.execute(" ".join(prep_stmt[1]))
+            conn.commit()
 
     def _download_data(self):
         """Download GeoNames data."""
@@ -254,10 +291,10 @@ class VoronoiGenerator:
             self.logger.error(f"Clean data file not found: {clean_file}")
             raise FileNotFoundError(f"Clean data file not found: {clean_file}")
 
+        copy_stmt = [
+            "COPY geocoding(city, country, lat, lon) FROM STDIN DELIMITER E'\\t'"
+        ]
         with conn.cursor() as cur:
-            copy_stmt = [
-                "COPY geocoding(city, country, lat, lon) FROM STDIN DELIMITER E'\\t'"
-            ]
             # Apply country filter if specified
             if self.config.country_filter:
                 self.logger.info(f"Filtering for country: {self.config.country_filter}")
@@ -299,7 +336,7 @@ class VoronoiGenerator:
         with conn.cursor() as cur:
             try:
                 cur.execute(
-                    "CREATE INDEX geocoding_geom_idx ON geocoding USING GIST(geom);"
+                    "CREATE INDEX geocoding_geom_idx ON geocoding USING GIST(geom)"
                 )
                 conn.commit()
                 self.logger.info("Spatial index created")
@@ -308,24 +345,41 @@ class VoronoiGenerator:
                 self.logger.error(f"Failed to create spatial index: {e}")
                 raise
 
+    def _create_country_index(self, conn):
+        """Create index on geocoding.country for FK."""
+        self.logger.info("Creating B+tree index on country")
+        with conn.cursor() as cur:
+            try:
+                cur.execute("CREATE INDEX geocoding_country_idx ON geocoding (country)")
+                conn.commit()
+                self.logger.info("country index created")
+            except Exception as e:
+                conn.rollback()
+                self.logger.error(f"Failed to create index on country: {e}")
+                raise
+
     def _compute_voronoi(self, conn):
         """Compute Voronoi polygons using PostGIS."""
         self.logger.info("Computing Voronoi polygons")
         with conn.cursor() as cur:
             try:
                 # First create a temporary table with all Voronoi polygons
-                cur.execute("""
-                    CREATE TEMP TABLE voronoi_temp AS
+                cur.execute(
+                    """
+                    CREATE TEMP TABLE voronoi_temp ON COMMIT DROP AS
                     SELECT (ST_Dump(ST_VoronoiPolygons(ST_Collect(geom)))).geom
-                    FROM geocoding;
-                """)
+                    FROM geocoding
+                """
+                )
 
                 # Update the main table by matching points to their containing polygons
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE geocoding g SET voronoi = v.geom
                     FROM voronoi_temp v
-                    WHERE ST_Contains(v.geom, g.geom);
-                """)
+                    WHERE ST_Contains(v.geom, g.geom)
+                """
+                )
 
                 conn.commit()
 
