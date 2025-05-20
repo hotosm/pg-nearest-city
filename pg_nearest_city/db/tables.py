@@ -41,7 +41,14 @@ class Country(BaseTable):
 
 
 class Geocoding(BaseTable):
-    """Geocoding table class - main table."""
+    """Geocoding table class - main table.
+
+    Note:
+       The 'country' column name is retained (vs. 'country_code')
+       despite being an ISO3166-alpha2 code for backwards compatibility.
+       It is a foreign key to the country.alpha2 column. It may
+       be migrated in the future.
+    """
 
     name: ClassVar[str] = "geocoding"
     depends_on: ClassVar[Optional[Type[BaseTable]]] = Country
