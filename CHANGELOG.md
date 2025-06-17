@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.0 (2025-06-17)
+
+### Feat
+
+- apply country filtering during import
+- add ability to skip downloading file if path is provided
+- replace subprocess/awk with csv
+- Added country table, renamed geo column
+- voronoi generator
+
+### Fix
+
+- reverted country_code column name change
+- added index on geocoding.country_code
+
+### Refactor
+
+- fix ruff lint issues for voronoi generator
+
 ## 0.2.1 (2025-02-17)
 
 ### Fix
