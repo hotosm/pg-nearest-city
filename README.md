@@ -48,15 +48,15 @@ web frameworks (APIs) that **have an existing PostGIS connection to utilise**.
 
 Simple alternatives:
 
-- The reverse geocoding package in Python [here](https://github.com/thampiman/reverse-geocoder)
-  is probably the original and canonincal implementation using K-D tree.
+- The [reverse geocoding](https://github.com/thampiman/reverse-geocoder) package
+  in Python is probably the original and canonincal implementation using K-D tree.
   - However, it's a bit outdated now, with numerous unattended pull
     requests and uses an unfavourable multiprocessing-based approach.
   - It leaves a large memory footprint of approximately 260MB to load the
     K-D tree in memory (see [benchmarks](./benchmark-results.md)), which
     remains there: an unacceptable compromise for a web server for such a
     small amount of functionality.
-- The package [here](https://github.com/richardpenman/reverse_geocode) is an excellent
+- [This package](https://github.com/richardpenman/reverse_geocode) is an excellent
   revamp of the package above, and possibly the best choice in many scenarios,
   particularly if PostGIS is not available.
 
