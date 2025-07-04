@@ -12,16 +12,48 @@ import gzip
 import logging
 import os
 import shutil
+import subprocess
 import tempfile
 import urllib.request
 import zipfile
-from dataclasses import dataclass
+from collections import ChainMap
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import psycopg
-from pg_nearest_city.db.tables import get_tables_in_creation_order
 from psycopg.rows import dict_row
+
+from pg_nearest_city.db.tables import get_tables_in_creation_order
+
+
+@dataclass
+class Header:
+    key: str
+    value: str
+
+    # dataclass.asdict builds using attributes as keys; we just need a key:value pair
+    def _to_dict(self):
+        return {self.key: self.value}
+
+
+@dataclass
+class URLConfig:
+    domain: str
+    path: str
+    scheme: str = "https"
+    slug: str = field(init=False)
+    zip_path: str = ""
+    headers: list[Header] = field(default_factory=list)
+    _headers: dict[str, str] = field(default_factory=dict)
+    url: str = field(init=False)
+
+    def __post_init__(self):
+        self._headers = dict(ChainMap(*[header._to_dict() for header in self.headers]))
+        self.domain = self.domain.rstrip("/")
+        self.path = self.path.lstrip("/")
+        self.slug = self.path.rsplit("/", maxsplit=1)[-1]
+        self.url = f"{self.scheme}://{self.domain}/{self.path}"
 
 
 @dataclass
@@ -35,16 +67,33 @@ class Config:
     db_host: str = os.environ.get("PGNEAREST_DB_HOST", "localhost")
     db_port: int = int(os.environ.get("PGNEAREST_DB_PORT", "5432"))
 
-    # Data sources
-    geonames_url: str = "http://download.geonames.org/export/dump/cities1000.zip"
-    _zip_path: str = ""
-
     # Output configuration
     output_dir: Path = Path("/data/output")  # Default output directory
     compress_output: bool = True
 
     # Processing options
     country_filter: Optional[str] = None  # Optional filter for testing (e.g., "IT")
+
+    # Data sources
+    country_boundaries: URLConfig = field(init=False)
+    geonames: URLConfig = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.geonames: URLConfig = URLConfig(
+            domain="download.geonames.org",
+            path="export/dump/cities1000.zip",
+            zip_path="cities1000.zip",
+        )
+        self.country_boundaries: URLConfig = URLConfig(
+            domain="www.naturalearthdata.com",
+            # This path is not a typo, it really has http//www... after the domain
+            path="http//www.naturalearthdata.com/download/10m/cultural/ne_10m_admin_0_countries.zip",
+            zip_path="countries10m.zip",
+            headers=[
+                Header(key="Referer", value="https://www.naturalearthdata.com/"),
+                Header(key="User-Agent", value="curl/8.7.1"),
+            ],
+        )
 
     def get_connection_string(self) -> str:
         """Generate PostgreSQL connection string."""
@@ -63,7 +112,7 @@ class VoronoiGenerator:
         """Initialise class."""
         self.config = config
         self.logger = logger or logging.getLogger("voronoi_generator")
-        self.temp_dir = None
+        self.temp_dir: Path | None = None
 
     def run_pipeline(self):
         """Execute the full data pipeline."""
@@ -78,11 +127,11 @@ class VoronoiGenerator:
             # Ensure output directories exist
             self.config.ensure_output_directories()
 
-            if not self.config._zip_path or not Path(self.config._zip_path).is_file():
-                self._download_data()
-                self.config._zip_path = ""
-            self._extract_data()
-            self._clean_data()
+            for url_config in (self.config.geonames, self.config.country_boundaries):
+                if not url_config.zip_path or not Path(url_config.zip_path).is_file():
+                    self._download_data(url_config)
+                self._extract_data(url_config)
+            self._clean_geonames()
 
             # Connect to database
             with psycopg.connect(
@@ -91,9 +140,10 @@ class VoronoiGenerator:
                 # Run each stage with the same connection
                 self._setup_database(conn)
                 self._setup_country_table(conn)
-                self._import_data(conn)
+                self._import_geonames(conn)
+                self._import_country_boundaries(conn)
                 self._create_country_index(conn)
-                self._create_spatial_index(conn)
+                self._create_spatial_indices(conn)
                 self._compute_voronoi(conn)
                 self._export_wkb(conn)
 
@@ -103,7 +153,7 @@ class VoronoiGenerator:
             self.logger.info("Pipeline completed successfully.")
 
         except Exception as e:
-            self.logger.error(f"Pipeline failed: {str(e)}")
+            self.logger.error(f"Pipeline failed: {e}")
             raise
         finally:
             # Cleanup is also handled by atexit, but we do it here as well
@@ -162,11 +212,11 @@ class VoronoiGenerator:
                 [
                     "CREATE TEMP TABLE country_tmp",
                     "ON COMMIT DROP",
-                    "AS SELECT *",
+                    "AS SELECT alpha2, alpha3, numeric, name",
                     "FROM country WITH NO DATA",
                 ],
                 [
-                    "INSERT INTO country",
+                    "INSERT INTO country (alpha2, alpha3, numeric, name)",
                     "SELECT *",
                     "FROM country_tmp",
                     "ORDER BY alpha2",
@@ -190,24 +240,33 @@ class VoronoiGenerator:
             cur.execute(" ".join(prep_stmt[1]))
             conn.commit()
 
-    def _download_data(self):
-        """Download GeoNames data."""
-        self.logger.info(f"Downloading data from {self.config.geonames_url}")
+    def _download_data(self, url_config: URLConfig):
+        """Download data from a given URL."""
+        self.logger.info(f"Downloading data from {url_config.domain}")
 
-        zip_path = self.temp_dir / "cities1000.zip"
+        assert isinstance(self.temp_dir, Path)
+        zip_path = self.temp_dir / url_config.zip_path
 
         try:
-            urllib.request.urlretrieve(self.config.geonames_url, zip_path)
-        except urllib.error.URLError as e:
+            _request = urllib.request.Request(
+                url_config.url, headers=url_config._headers
+            )
+            with urllib.request.urlopen(_request) as resp:
+                with open(zip_path, "wb") as f:
+                    shutil.copyfileobj(resp, f)
+        except (urllib.error.URLError, urllib.error.HTTPError) as e:
             self.logger.error(f"Failed to download data: {e}")
             raise
+        except (OSError, PermissionError) as e:
+            self.logger.error(f"Failed to save data: {e}")
+            raise
 
-    def _extract_data(self):
-        """Extract GeoNames data."""
-        zip_path = self.temp_dir / "cities1000.zip"
+    def _extract_data(self, url_config: URLConfig):
+        """Extract data from a given zip file."""
+        assert isinstance(self.temp_dir, Path)
+        zip_path = self.temp_dir / url_config.zip_path
+        shutil.copy2(url_config.zip_path, zip_path)
 
-        if self.config._zip_path:
-            shutil.copy2(self.config._zip_path, zip_path)
         try:
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
                 zip_ref.extractall(self.temp_dir)
@@ -215,9 +274,9 @@ class VoronoiGenerator:
             self.logger.error(f"Failed to extract zip file: {e}")
             raise
 
-    def _clean_data(self):
-        """Clean GeoNames data to the simplified format."""
-        self.logger.info("Cleaning data to simplified format")
+    def _clean_geonames(self):
+        """Clean GeoNames data to simplified format."""
+        self.logger.info("Cleaning GeoNames data to simplified format")
 
         raw_file = self.temp_dir / "cities1000.txt"
         clean_file = self.temp_dir / "cities_clean.txt"
@@ -282,10 +341,62 @@ class VoronoiGenerator:
         self.logger.info(f"Data cleaned and saved to {clean_file}")
         return clean_file
 
-    def _import_data(self, conn):
-        """Import the cleaned data into PostgreSQL."""
+    def _import_country_boundaries(self, conn) -> None:
+        """Import the country boundaries into PostgreSQL."""
+        self.logger.info("Importing NaturalEarth country boundaries data")
+
+        assert isinstance(self.temp_dir, Path)
+        if not shutil.which("ogr2ogr"):
+            raise RuntimeError("Couldn't find ogr2ogr - please install it")
+        _shpfile_path = Path(self.config.country_boundaries.slug)
+        ogr_cmd: list[str] = [
+            "ogr2ogr",
+            "-nln",
+            "tmp_country_bounds",
+            "-nlt",
+            "PROMOTE_TO_MULTI",
+            "-lco",
+            "GEOMETRY_NAME=geom",
+            "-lco",
+            "PRECISION=NO",
+            "-f",
+            "PostgreSQL",
+            "-sql",
+            f"SELECT iso_a2_eh AS alpha2, iso_a3_eh AS alpha3, iso_n3_eh AS numeric FROM {_shpfile_path.stem}",
+            f"PG:{self.config.get_connection_string()}",
+            f"{self.temp_dir / _shpfile_path.with_suffix('.shp')}",
+        ]
+
+        update_sql: str = """
+            UPDATE country
+            SET geom = t.geom
+            FROM tmp_country_bounds t
+            WHERE country.alpha2 = t.alpha2
+        """
+        drop_sql: str = "DROP TABLE tmp_country_bounds"
+
+        try:
+            subprocess.run(ogr_cmd, check=True)
+        except subprocess.CalledProcessError:
+            self.logger.error(
+                f"Failed to extract country boundaries from {_shpfile_path.with_suffix('.shp')}"
+            )
+            raise
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute(update_sql)
+                # cur.execute(drop_sql)
+                conn.commit()
+        except Exception as e:
+            conn.rollback()
+            self.logger.error(f"Failed to update country with geom: {e}")
+            raise
+
+    def _import_geonames(self, conn):
+        """Import the cleaned GeoNames data into PostgreSQL."""
         clean_file = self.temp_dir / "cities_clean.txt"
-        self.logger.info(f"Importing data from {clean_file}")
+        self.logger.info(f"Importing GeoNames data from {clean_file}")
 
         if not clean_file.exists():
             self.logger.error(f"Clean data file not found: {clean_file}")
@@ -330,19 +441,22 @@ class VoronoiGenerator:
                 self.logger.error(f"Failed to import data: {e}")
                 raise
 
-    def _create_spatial_index(self, conn):
-        """Create spatial index for efficient processing."""
+    def _create_spatial_indices(self, conn):
+        """Create spatial indices for efficient processing."""
         self.logger.info("Creating spatial index on geometry")
         with conn.cursor() as cur:
             try:
                 cur.execute(
-                    "CREATE INDEX geocoding_geom_idx ON geocoding USING GIST(geom)"
+                    "CREATE INDEX IF NOT EXISTS geocoding_geom_idx ON geocoding USING GIST(geom)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS country_geom_idx ON country USING GIST(geom)"
                 )
                 conn.commit()
-                self.logger.info("Spatial index created")
+                self.logger.info("Spatial indices created")
             except Exception as e:
                 conn.rollback()
-                self.logger.error(f"Failed to create spatial index: {e}")
+                self.logger.error(f"Failed to create spatial indices: {e}")
                 raise
 
     def _create_country_index(self, conn):
@@ -350,7 +464,9 @@ class VoronoiGenerator:
         self.logger.info("Creating B+tree index on country")
         with conn.cursor() as cur:
             try:
-                cur.execute("CREATE INDEX geocoding_country_idx ON geocoding (country)")
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS geocoding_country_idx ON geocoding (country)"
+                )
                 conn.commit()
                 self.logger.info("country index created")
             except Exception as e:
@@ -527,7 +643,12 @@ def parse_args():
         "--output-dir", default="/data/output", help="Directory for output files"
     )
     parser.add_argument(
-        "--zip-path", help="Path to existing cities1000.zip (avoids re-downloading)"
+        "--zip-path-countries",
+        help="Path to existing countries10m.zip (avoids re-downloading)",
+    )
+    parser.add_argument(
+        "--zip-path-cities",
+        help="Path to existing cities1000.zip (avoids re-downloading)",
     )
 
     return parser.parse_args()
@@ -550,7 +671,6 @@ if __name__ == "__main__":
     config.db_name = args.db_name or config.db_name
     config.db_user = args.db_user or config.db_user
     config.db_password = args.db_password or config.db_password
-    config._zip_path = args.zip_path or config._zip_path
 
     generator = VoronoiGenerator(config, logger)
 
