@@ -30,6 +30,7 @@ class Country(BaseTable):
         alpha3 CHAR(3) NOT NULL,
         numeric CHAR(3) NOT NULL,
         name TEXT NOT NULL,
+        geom GEOMETRY(MultiPolygon,4326) DEFAULT NULL,
         CONSTRAINT country_pkey PRIMARY KEY (alpha2),
         CONSTRAINT country_alpha3_unq UNIQUE (alpha3),
         CONSTRAINT country_numeric_unq UNIQUE (numeric),
