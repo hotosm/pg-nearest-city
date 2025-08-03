@@ -3,7 +3,11 @@ from unittest.mock import Mock, patch
 
 import psycopg
 import pytest
-from pg_nearest_city.db.data_cleanup import PredicateData, make_queries
+from pg_nearest_city.db.data_cleanup import (
+    PredicateData,
+    RowData,
+    make_queries,
+)
 
 if TYPE_CHECKING:
     from pg_nearest_city.db.data_cleanup import _DML, _Comment, _PredicateComparison

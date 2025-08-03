@@ -834,7 +834,8 @@ if __name__ == "__main__":
     else:
         logger.warning(
             "Failed to match filename for geonames simple output - "
-            f"check output directory for file like '{Path(config.geonames.zip_name).stem}'"
+            "check output directory for file like "
+            f"'{Path(config.geonames.zip_name).stem}'"
         )
         geonames_output = "?"
     try:
