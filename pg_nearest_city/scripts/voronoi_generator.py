@@ -11,6 +11,7 @@ import csv
 import gzip
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ import urllib.request
 import zipfile
 from collections import ChainMap
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -138,9 +140,11 @@ class Config:
         """Generate PostgreSQL connection string."""
         return f"postgresql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
 
-    def ensure_output_directories(self):
-        """Ensure all output directories exist."""
+    def ensure_directories(self):
+        """Ensure all directories exist."""
         # Ensure output directory exists
+        if self.cache_files:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -150,6 +154,7 @@ class VoronoiGenerator:
     def __init__(self, config: Config, logger: Optional[logging.Logger] = None):
         """Initialise class."""
         self.config = config
+        self.cache_dir: Path = self.config.cache_dir
         self.logger = logger or logging.getLogger("voronoi_generator")
         self.temp_dir: Path | None = None
 
@@ -163,8 +168,8 @@ class VoronoiGenerator:
         atexit.register(self._cleanup_temp_dir)
 
         try:
-            # Ensure output directories exist
-            self.config.ensure_output_directories()
+            # Ensure directories exist
+            self.config.ensure_directories()
 
             for url_config in (self.config.geonames, self.config.country_boundaries):
                 if (
@@ -173,6 +178,11 @@ class VoronoiGenerator:
                     or not Path(self.config.cache_dir / url_config.zip_name).is_file()
                 ):
                     self._download_data(url_config)
+                else:
+                    self._check_cached_file_mtime(url_config)
+                    self._copy_file_from_cache(url_config)
+                if self.config.cache_files:
+                    self._copy_file_to_cache(url_config)
                 self._extract_data(url_config)
             self._clean_geonames()
 
@@ -311,6 +321,44 @@ class VoronoiGenerator:
             self.logger.error(f"Failed to save data: {e}")
             raise
 
+    def _check_cached_file_mtime(self, url_config: URLConfig):
+        """Check modification time of cached file to determine freshness."""
+        assert isinstance(self.cache_dir, Path)
+        zip_name = self.cache_dir / url_config.zip_name
+        assert zip_name.is_file()
+        if datetime.fromtimestamp(
+            zip_name.stat().st_mtime
+        ) < self.config.cur_dt - timedelta(weeks=1):
+            self.logger.warning(f"{url_config.zip_name} is more than one week old")
+            if (
+                _download_file := input(f"Download {url_config.zip_name} again (y/n)? ")
+            ).lower() == "y":
+                self._download_data(url_config)
+                return
+            self.logger.info(f"User declined to re-download {url_config.zip_name}")
+
+    def _copy_file_to_cache(self, url_config: URLConfig):
+        """Copy a file from temp directory to local cache directory."""
+        assert isinstance(self.cache_dir, Path)
+        assert isinstance(self.temp_dir, Path)
+        zip_name = self.temp_dir / url_config.zip_name
+        try:
+            shutil.copy2(zip_name, self.cache_dir / url_config.zip_name)
+        except (FileNotFoundError, PermissionError) as e:
+            self.logger.error(f"Failed to copy zip file: {e}")
+            raise
+
+    def _copy_file_from_cache(self, url_config: URLConfig):
+        """Copy a file from local cache directory to temp directory."""
+        assert isinstance(self.cache_dir, Path)
+        assert isinstance(self.temp_dir, Path)
+        zip_name = self.temp_dir / url_config.zip_name
+        try:
+            shutil.copy2(self.cache_dir / url_config.zip_name, zip_name)
+        except (FileNotFoundError, PermissionError) as e:
+            self.logger.error(f"Failed to copy zip file: {e}")
+            raise
+
     def _extract_data(self, url_config: URLConfig):
         """Extract data from a given zip file."""
         assert isinstance(self.temp_dir, Path)
@@ -328,6 +376,7 @@ class VoronoiGenerator:
 
         raw_file = self.temp_dir / Path(self.config.geonames.zip_name).with_suffix(
             ".txt"
+        )
         clean_file = self.temp_dir / "cities_clean.txt"
 
         # This is the file format expected by the package
@@ -708,20 +757,18 @@ def parse_args():
     group_db.add_argument("--db-user", help="Database username")
     group_db.add_argument("--db-password", help="Database password")
 
+    parser.add_argument(
+        "--cache-dir", default="./cache", help="Directory to cache downloaded files"
+    )
     parser.add_argument("--country", help="Filter to specific country code (e.g. IT)")
+    parser.add_argument(
+        "--no-cache", action="store_true", help="Don't cache downloaded files"
+    )
     parser.add_argument(
         "--no-compress", action="store_true", help="Don't compress output"
     )
     parser.add_argument(
         "--output-dir", default="/data/output", help="Directory for output files"
-    )
-    parser.add_argument(
-        "--zip-path-countries",
-        help="Path to existing countries10m.zip (avoids re-downloading)",
-    )
-    parser.add_argument(
-        "--zip-path-cities",
-        help="Path to existing cities1000.zip (avoids re-downloading)",
     )
 
     return parser.parse_args()
@@ -733,7 +780,9 @@ if __name__ == "__main__":
 
     # Create config with consistent Path objects
     config = Config(
+        cache_dir=Path(args.cache_dir),
         output_dir=Path(args.output_dir),
+        cache_files=not args.no_cache,
         compress_output=not args.no_compress,
         country_filter=args.country,
     )
