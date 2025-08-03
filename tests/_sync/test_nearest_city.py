@@ -2,11 +2,9 @@
 
 import os
 
-import pytest
-
 import psycopg
-
-from pg_nearest_city import NearestCity, Location, DbConfig
+import pytest
+from pg_nearest_city import DbConfig, Location, NearestCity, geo_test_cases
 
 
 # NOTE we define the fixture here and not in conftest.py to allow
@@ -86,12 +84,14 @@ def test_check_initialization_incomplete_table(test_db):
     geocoder = NearestCity(test_db)
 
     with test_db.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE pg_nearest_city_geocoding (
                 city varchar,
                 country varchar
             );
-        """)
+        """
+        )
         test_db.commit()
 
         status = geocoder._check_initialization_status(cur)
@@ -188,3 +188,13 @@ def test_invalid_coordinates(test_db):
 
         with pytest.raises(ValueError):
             geocoder.query(0, 181)  # Invalid longitude
+
+
+@pytest.mark.parametrize("case", geo_test_cases)
+def test_cities_close_country_boundaries(case):
+    with NearestCity() as geocoder:
+        location = geocoder.query(lon=case.lon, lat=case.lat)
+        assert location is not None
+        assert isinstance(location, Location)
+        assert location.city == case.expected_city
+        assert location.country == case.expected_country

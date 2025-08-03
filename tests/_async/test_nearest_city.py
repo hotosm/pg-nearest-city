@@ -2,11 +2,10 @@
 
 import os
 
+import psycopg
 import pytest
 import pytest_asyncio
-import psycopg
-
-from pg_nearest_city import AsyncNearestCity, Location, DbConfig
+from pg_nearest_city import AsyncNearestCity, DbConfig, Location, geo_test_cases
 
 
 # NOTE we define the fixture here and not in conftest.py to allow
@@ -86,12 +85,14 @@ async def test_check_initialization_incomplete_table(test_db):
     geocoder = AsyncNearestCity(test_db)
 
     async with test_db.cursor() as cur:
-        await cur.execute("""
+        await cur.execute(
+            """
             CREATE TABLE pg_nearest_city_geocoding (
                 city varchar,
                 country varchar
             );
-        """)
+        """
+        )
         await test_db.commit()
 
         status = await geocoder._check_initialization_status(cur)
@@ -188,3 +189,13 @@ async def test_invalid_coordinates(test_db):
 
         with pytest.raises(ValueError):
             await geocoder.query(0, 181)  # Invalid longitude
+
+
+@pytest.mark.parametrize("case", geo_test_cases)
+async def test_cities_close_country_boundaries(case):
+    async with AsyncNearestCity() as geocoder:
+        location = await geocoder.query(lon=case.lon, lat=case.lat)
+        assert location is not None
+        assert isinstance(location, Location)
+        assert location.city == case.expected_city
+        assert location.country == case.expected_country
