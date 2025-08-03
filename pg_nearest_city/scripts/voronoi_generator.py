@@ -24,9 +24,9 @@ from pathlib import Path
 from typing import Optional
 
 import psycopg
-from psycopg.rows import dict_row
-
+from pg_nearest_city.db.data_cleanup import ROWS_TO_CLEAN, make_queries
 from pg_nearest_city.db.tables import get_tables_in_creation_order
+from psycopg.rows import dict_row
 
 
 @dataclass
@@ -194,6 +194,7 @@ class VoronoiGenerator:
                 self._setup_database(conn)
                 self._setup_country_table(conn)
                 self._import_geonames(conn)
+                self._cleanup_geonames_db(conn)
                 self._import_country_boundaries(conn)
                 self._create_country_index(conn)
                 self._create_spatial_indices(conn)
@@ -546,6 +547,36 @@ class VoronoiGenerator:
                 conn.rollback()
                 self.logger.error(f"Failed to import data: {e}")
                 raise
+
+    def _cleanup_geonames_db(self, conn):
+        """Manually fix known issues with dataset."""
+        self.logger.info("Cleaning up geonames")
+        query_data = zip(ROWS_TO_CLEAN, make_queries(ROWS_TO_CLEAN), strict=False)
+
+        with conn.cursor() as cur:
+            for query_info, query in query_data:
+                try:
+                    cur.execute(query)
+                    if cur.rowcount == query_info.result_limit:
+                        conn.commit()
+                        continue
+                    elif cur.rowcount > query_info.result_limit:
+                        self.logger.error(
+                            f"Expected {query_info.result_limit} affected rows, "
+                            f"got {cur.rowcount} affected rows - "
+                            "tighten predicates and try again"
+                        )
+                        conn.rollback()
+                        return
+                    elif not cur.rowcount:
+                        self.logger.warning(
+                            f"Expected {query_info.result_limit} affected rows, "
+                            "got 0 affected rows"
+                        )
+                except Exception as e:
+                    conn.rollback()
+                    self.logger.error(f"Failed to update data: {e}")
+                    raise
 
     def _create_spatial_indices(self, conn):
         """Create spatial indices for efficient processing."""
