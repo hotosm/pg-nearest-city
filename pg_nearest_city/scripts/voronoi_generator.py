@@ -29,10 +29,11 @@ from pg_nearest_city.db.tables import get_tables_in_creation_order
 
 @dataclass
 class Header:
+    """Class to create a k:v pair instead of dataclasses' asdict method."""
+
     key: str
     value: str
 
-    # dataclass.asdict builds using attributes as keys; we just need a key:value pair
     def _to_dict(self):
         return {self.key: self.value}
 
@@ -62,6 +63,7 @@ class URLConfig:
     url: str = field(init=False)
 
     def __post_init__(self):
+        """Creates necessary portions of dataclass from supplied values."""
         self._headers = dict(ChainMap(*[header._to_dict() for header in self.headers]))
         self.domain = self.domain.rstrip("/")
         self.path = self.path.lstrip("/")
@@ -744,7 +746,6 @@ if __name__ == "__main__":
     config.db_password = args.db_password or config.db_password
 
     generator = VoronoiGenerator(config, logger)
-
     geonames_output_match = re.match(r"([a-z]+)([0-9]+)", config.geonames.zip_name, re.I)
     if geonames_output_match:
         geonames_output = f"{'_'.join(geonames_output_match.groups())}_simple.txt.gz"
