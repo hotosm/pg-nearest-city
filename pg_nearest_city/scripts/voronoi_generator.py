@@ -826,7 +826,9 @@ if __name__ == "__main__":
     config.db_password = args.db_password or config.db_password
 
     generator = VoronoiGenerator(config, logger)
-    geonames_output_match = re.match(r"([a-z]+)([0-9]+)", config.geonames.zip_name, re.I)
+    geonames_output_match = re.match(
+        r"([a-z]+)([0-9]+)", config.geonames.zip_name, re.I
+    )
     if geonames_output_match:
         geonames_output = f"{'_'.join(geonames_output_match.groups())}_simple.txt.gz"
     else:

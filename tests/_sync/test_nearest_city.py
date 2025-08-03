@@ -4,7 +4,8 @@ import os
 
 import psycopg
 import pytest
-from pg_nearest_city import DbConfig, Location, NearestCity, geo_test_cases
+
+from pg_nearest_city import NearestCity, DbConfig, Location, geo_test_cases
 
 
 # NOTE we define the fixture here and not in conftest.py to allow

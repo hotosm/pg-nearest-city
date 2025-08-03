@@ -3,14 +3,10 @@ from unittest.mock import Mock, patch
 
 import psycopg
 import pytest
-from pg_nearest_city.db.data_cleanup import (ROWS_TO_CLEAN, SQL_CLEAN_BASE_DEL,
-                                             SQL_CLEAN_BASE_UPD,
-                                             SQL_CLEAN_PREDICATES, Comment,
-                                             PredicateData, make_queries)
+from pg_nearest_city.db.data_cleanup import PredicateData, make_queries
 
 if TYPE_CHECKING:
-    from pg_nearest_city.db.data_cleanup import (_DML, _Comment,
-                                                 _PredicateComparison)
+    from pg_nearest_city.db.data_cleanup import _DML, _Comment, _PredicateComparison
 
 
 @pytest.fixture()
