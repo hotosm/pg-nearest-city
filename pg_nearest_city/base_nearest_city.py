@@ -181,7 +181,7 @@ class BaseNearestCity:
             )
             SELECT g.city, g.country, g.lon, g.lat
             FROM query_point qp
-            JOIN country c ON c.geom && qp.geom
+            JOIN country c ON ST_ContainsProperly(c.geom, qp.geom)
             JOIN geocoding g ON c.alpha2 = g.country
             ORDER BY g.geom <-> qp.geom
             LIMIT 1
@@ -201,7 +201,7 @@ class GeoTestCase:
     lon: longitude
     lat: latitude
     expected city: name of city expected, exactly as stored in the DB
-    expected coutnry: ISO 3166-1 alpha2 code of the country expected
+    expected country: ISO 3166-1 alpha2 code of the country expected
 
     """
 
@@ -227,4 +227,5 @@ geo_test_cases: list[GeoTestCase] = [
     GeoTestCase(55.478017, -21.297475, "Saint-Pierre", "RE"),
     GeoTestCase(-6.271183, 55.687669, "Bowmore", "GB"),
     GeoTestCase(88.136284, 26.934422, "Mirik", "IN"),
+    GeoTestCase(114.060691, 22.512898, "San Tin", "HK"),
 ]

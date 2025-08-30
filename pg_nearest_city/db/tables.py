@@ -28,12 +28,10 @@ class Country(BaseTable):
     CREATE TABLE country (
         alpha2 CHAR(2) NOT NULL,
         alpha3 CHAR(3) NOT NULL,
-        numeric CHAR(3) NOT NULL,
         name TEXT NOT NULL,
         geom GEOMETRY(MultiPolygon,4326) DEFAULT NULL,
         CONSTRAINT country_pkey PRIMARY KEY (alpha2),
         CONSTRAINT country_alpha3_unq UNIQUE (alpha3),
-        CONSTRAINT country_numeric_unq UNIQUE (numeric),
         CONSTRAINT country_name_len_chk CHECK (
             char_length(name) <= 126
         )
@@ -65,7 +63,6 @@ class Geocoding(BaseTable):
         geom GEOMETRY(Point,4326) GENERATED ALWAYS AS (
           ST_SetSRID(ST_MakePoint(lon, lat), 4326)
         ) STORED,
-        voronoi GEOMETRY(Polygon,4326),
         CONSTRAINT geocoding_pkey PRIMARY KEY (id),
         CONSTRAINT geocoding_city_len_chk CHECK (
             char_length(city) <= 126

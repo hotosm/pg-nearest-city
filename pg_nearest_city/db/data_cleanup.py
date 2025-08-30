@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from pg_nearest_city.db.tables import get_all_table_classes
 from psycopg import sql
+
+from pg_nearest_city.db.tables import get_all_table_classes
 
 
 class _Comment(Enum):
@@ -151,7 +152,7 @@ class RowData:
     col_val: value to assign to the specified column
     predicate_cols: one or more PredicateData instances
     result_limit: maximum number of rows that to be affected (0 = no limit)
-
+    val_is_query: bool indicating whether col_val is a query to be parsed
     """
 
     comment: _Comment
@@ -161,10 +162,13 @@ class RowData:
     col_val: float | int | str | None = None
     predicate_cols: list[PredicateData] = field(default_factory=list)
     result_limit: int = 1
+    val_is_query: bool = False
 
     def __post_init__(self):
         """Performs validation of various supplied values."""
-        if self.tbl_name not in [x.name for x in get_all_table_classes()]:
+        if self.tbl_name not in [
+            x.name for x in get_all_table_classes()
+        ] and not self.tbl_name.startswith("tmp_"):
             raise ValueError(f"Table {self.tbl_name} does not exist")
 
         if self.dml is _DML.INSERT:
@@ -247,6 +251,47 @@ ROWS_TO_CLEAN: list[RowData] = [
         ],
         tbl_name="geocoding",
         result_limit=1,
+        val_is_query=False,
+    ),
+    RowData(
+        comment=_Comment.COORDINATES,
+        col_name="geom",
+        col_val="""
+            ST_Difference(
+                geom,
+                (SELECT ST_Union(geom) FROM tmp_country_bounds_adm1)
+            )""",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(
+                col_name="alpha2",
+                col_val="CN",
+                comparison=PC.EQUAL,
+            ),
+            PD(
+                col_name="geom",
+                comparison=PC.NOT_NULL,
+            ),
+        ],
+        tbl_name="country",
+        result_limit=1,
+        val_is_query=True,
+    ),
+    RowData(
+        comment=_Comment.ERRATUM,
+        col_name="alpha3",
+        col_val="XKX",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(
+                col_name="alpha3",
+                col_val="XKO",
+                comparison=PC.EQUAL,
+            ),
+        ],
+        tbl_name="tmp_country_bounds_adm0",
+        result_limit=1,
+        val_is_query=False,
     ),
 ]
 
@@ -271,7 +316,11 @@ def make_queries(rows: list[RowData]) -> list[sql.Composed]:
             base_query = SQL_CLEAN_BASE_UPD.format(
                 tbl_name=sql.Identifier(row.tbl_name),
                 col_name=sql.Identifier(row.col_name),
-                col_val=sql.Literal(row.col_val),
+                col_val=(
+                    sql.Literal(row.col_val)
+                    if not row.val_is_query
+                    else sql.SQL(row.col_val)
+                ),
             )
         elif row.dml is _DML.DELETE:
             base_query = SQL_CLEAN_BASE_DEL.format(
