@@ -125,49 +125,107 @@ class BaseNearestCity:
     @staticmethod
     def _get_tableexistence_query() -> sql.SQL:
         """Check if a table exists via SQL."""
-        return sql.SQL("""
+        return sql.SQL(
+            """
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables
                     WHERE table_name = 'pg_nearest_city_geocoding'
                 );
-            """)
+            """
+        )
 
     @staticmethod
     def _get_table_structure_query() -> sql.SQL:
         """Get the fields from the pg_nearest_city_geocoding table."""
-        return sql.SQL("""
+        return sql.SQL(
+            """
             SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_name = 'pg_nearest_city_geocoding'
-        """)
+        """
+        )
 
     @staticmethod
     def _get_data_completeness_query() -> sql.SQL:
         """Check data was loaded into correct structure."""
-        return sql.SQL("""
+        return sql.SQL(
+            """
             SELECT
                 COUNT(*) as total_cities,
                 COUNT(*) FILTER (WHERE voronoi IS NOT NULL) as cities_with_voronoi
             FROM pg_nearest_city_geocoding;
-        """)
+        """
+        )
 
     @staticmethod
     def _get_spatial_index_check_query() -> sql.SQL:
         """Check index was created correctly."""
-        return sql.SQL("""
+        return sql.SQL(
+            """
             SELECT EXISTS (
                 SELECT FROM pg_indexes
                 WHERE tablename = 'pg_nearest_city_geocoding'
                 AND indexname = 'geocoding_voronoi_idx'
             );
-        """)
+        """
+        )
 
     @staticmethod
     def _get_reverse_geocoding_query(lon: float, lat: float):
         """The query to do the reverse geocode!"""
-        return sql.SQL("""
-            SELECT city, country, lat, lon
-            FROM pg_nearest_city_geocoding
-            WHERE ST_Contains(voronoi, ST_SetSRID(ST_MakePoint({}, {}), 4326))
+        return sql.SQL(
+            """
+            WITH query_point AS (
+              SELECT ST_SetSRID(
+                ST_MakePoint({}, {}), 4326) AS geom
+            )
+            SELECT g.city, g.country, g.lon, g.lat
+            FROM query_point qp
+            JOIN country c ON ST_ContainsProperly(c.geom, qp.geom)
+            JOIN geocoding g ON c.alpha2 = g.country
+            ORDER BY g.geom <-> qp.geom
             LIMIT 1
-        """).format(sql.Literal(lon), sql.Literal(lat))
+            """
+        ).format(sql.Literal(lon), sql.Literal(lat))
+
+
+@dataclass
+class GeoTestCase:
+    """Class representing points with their expected values.
+
+    The given points lie either close to country borders,
+    are islands, or both (St. Martin / Sint Marteen).
+
+    All longitude / latitudes are in EPSG 4326.
+
+    lon: longitude
+    lat: latitude
+    expected city: name of city expected, exactly as stored in the DB
+    expected country: ISO 3166-1 alpha2 code of the country expected
+
+    """
+
+    lon: float
+    lat: float
+    expected_city: str
+    expected_country: str
+
+
+geo_test_cases: list[GeoTestCase] = [
+    GeoTestCase(7.397405, 43.750402, "La Turbie", "FR"),
+    GeoTestCase(-79.0647, 43.0896, "Niagara Falls", "US"),
+    GeoTestCase(-117.1221, 32.5422, "Imperial Beach", "US"),
+    GeoTestCase(-5.3525, 36.1658, "La Línea de la Concepción", "ES"),
+    GeoTestCase(12.4534, 41.9033, "Vatican City", "VA"),
+    GeoTestCase(-63.0822, 18.0731, "Marigot", "MF"),
+    GeoTestCase(-63.11852, 18.03783, "Simpson Bay Village", "SX"),
+    GeoTestCase(-63.0458, 18.0255, "Philipsburg", "SX"),
+    GeoTestCase(7.6194, 47.5948, "Weil am Rhein", "DE"),
+    GeoTestCase(10.2640, 47.1274, "St Anton am Arlberg", "AT"),
+    GeoTestCase(4.9312, 51.4478, "Baarle-Nassau", "NL"),
+    GeoTestCase(-6.3390, 54.1751, "Newry", "GB"),
+    GeoTestCase(55.478017, -21.297475, "Saint-Pierre", "RE"),
+    GeoTestCase(-6.271183, 55.687669, "Bowmore", "GB"),
+    GeoTestCase(88.136284, 26.934422, "Mirik", "IN"),
+    GeoTestCase(114.060691, 22.512898, "San Tin", "HK"),
+]
