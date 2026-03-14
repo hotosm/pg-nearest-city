@@ -4,7 +4,8 @@ version = "1.0.0"
 description = "Given a geopoint, find the nearest city using PostGIS (reverse geocode)."
 authors = [
     {name = "Sam Woodcock", email = "sam.woodcock@hotosm.org"},
-    {name = "Emir Fabio Cognigni"}
+    {name = "Emir Fabio Cognigni"},
+    {name = "Stephan Garland", email = "stephan@sgarland.dev"}
 ]
 readme = "README.md"
 license = {text = "GPL-3.0-only"}
@@ -91,7 +92,6 @@ testpaths = [
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-filterwarnings="ignore:No database password configured.*:UserWarning"
 
 [tool.commitizen]
 name = "cz_conventional_commits"
