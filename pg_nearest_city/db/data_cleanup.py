@@ -7,23 +7,20 @@ from enum import Enum
 
 from psycopg import sql
 
-from pg_nearest_city.db.tables import get_all_table_classes
 
-
-class _Comment(Enum):
+class _CorrectionType(str, Enum):
     COORDINATES = "COORDINATES"
     ERRATUM = "ERRATUM"
     MISSING = "MISSING"
     SPELLING = "SPELLING"
 
 
-class _DML(Enum):
-    DELETE = "DELETE"
-    INSERT = "INSERT"  # not yet implemented
+class _ConflictAction(str, Enum):
+    NOTHING = "NOTHING"
     UPDATE = "UPDATE"
 
 
-class _PredicateComparison(Enum):
+class _PredicateComparison(str, Enum):
     BETWEEN = "BETWEEN"
     BETWEEN_SYM = "BETWEEN SYMMETRIC"
     DISTINCT = "IS DISTINCT FROM"
@@ -37,7 +34,7 @@ class _PredicateComparison(Enum):
     NOT_BETWEEN = "NOT BETWEEN"
     NOT_BETWEEN_SYM = "NOT BETWEEN SYMMETRIC"
     NOT_DISTINCT = "IS NOT DISTINCT FROM"
-    NOT_EQ = "<>"
+    NOT_EQUAL = "<>"
     NOT_FALSE = "IS NOT FALSE"
     NOT_IN = "NOT IN"
     NOT_NULL = "IS NOT NULL"
@@ -141,51 +138,93 @@ class PredicateData:
                 raise ValueError(f"Must provide col_val for {self.comparison.value}")
 
 
+def _validate_predicates(predicate_cols: list[PredicateData]) -> None:
+    if not predicate_cols:
+        raise ValueError("At least one predicate must be provided")
+    if any(not isinstance(p, PredicateData) for p in predicate_cols):
+        bad = {type(p).__name__ for p in predicate_cols}
+        raise TypeError(f"predicate_cols must be PredicateData; got {bad}")
+
+
 @dataclass
-class RowData:
-    """Class representing a partial row transformation.
+class UpdateData:
+    """An UPDATE correction: sets col_name = col_val where predicate_cols match."""
 
-    comment: type of correction (purely for observation)
-    dml: type of _DML
-    tbl_name: table name containing the target column
-    col_name: column name to transform.
-    col_val: value to assign to the specified column
-    predicate_cols: one or more PredicateData instances
-    result_limit: maximum number of rows that to be affected (0 = no limit)
-    val_is_query: bool indicating whether col_val is a query to be parsed
-    """
-
-    comment: _Comment
-    dml: _DML
+    correction_type: _CorrectionType
+    description: str
     tbl_name: str
-    col_name: str | None = None
-    col_val: float | int | str | None = None
+    col_name: str
+    col_val: float | int | str
     predicate_cols: list[PredicateData] = field(default_factory=list)
     result_limit: int = 1
-    val_is_query: bool = False
+    is_post_load: bool = True
 
-    def __post_init__(self):
-        """Performs validation of various supplied values."""
-        if self.tbl_name not in [
-            x.name for x in get_all_table_classes()
-        ] and not self.tbl_name.startswith("tmp_"):
-            raise ValueError(f"Table {self.tbl_name} does not exist")
-
-        if self.dml is _DML.INSERT:
-            raise NotImplementedError("INSERT operations not yet implemented")
-
-        if self.dml is not _DML.DELETE and (
-            self.col_name is None or self.col_val is None
-        ):
-            raise ValueError(
-                f"Column name and value must be provided for {self.dml.value}"
-            )
-
-        if not self.predicate_cols:
-            raise ValueError("At least one predicate must be provided")
-
+    def __post_init__(self) -> None:
+        _validate_predicates(self.predicate_cols)
         if self.result_limit < 0:
             raise ValueError("result_limit must be non-negative")
+
+
+@dataclass
+class DeleteData:
+    """A DELETE correction: removes rows where predicate_cols match."""
+
+    correction_type: _CorrectionType
+    description: str
+    tbl_name: str
+    predicate_cols: list[PredicateData] = field(default_factory=list)
+    result_limit: int = 1
+    is_post_load: bool = True
+
+    def __post_init__(self) -> None:
+        _validate_predicates(self.predicate_cols)
+        if self.result_limit < 0:
+            raise ValueError("result_limit must be non-negative")
+
+
+@dataclass
+class InsertData:
+    """An INSERT correction.
+
+    col_vals: mapping of column name → value to insert.
+
+    Conflict resolution (mutually exclusive):
+      - conflict_cols + conflict_action: ON CONFLICT (...) DO NOTHING / DO UPDATE SET
+      - existence_check: INSERT ... SELECT ... WHERE NOT EXISTS
+        (SELECT 1 FROM ... WHERE ...)
+    """
+
+    correction_type: _CorrectionType
+    description: str
+    tbl_name: str
+    col_vals: dict[str, float | int | str]
+    conflict_cols: list[str] = field(default_factory=list)
+    conflict_action: _ConflictAction | None = None
+    existence_check: list[PredicateData] = field(default_factory=list)
+    result_limit: int = 1
+    is_post_load: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.col_vals:
+            raise ValueError("col_vals must not be empty")
+        if self.conflict_cols and self.existence_check:
+            raise ValueError(
+                "conflict_cols/conflict_action and existence_check "
+                "are mutually exclusive"
+            )
+        if bool(self.conflict_cols) != (self.conflict_action is not None):
+            raise ValueError(
+                "conflict_cols and conflict_action must both be provided or neither"
+            )
+        if self.result_limit < 0:
+            raise ValueError("result_limit must be non-negative")
+        if self.existence_check:
+            if any(not isinstance(p, PredicateData) for p in self.existence_check):
+                bad = {type(p).__name__ for p in self.existence_check}
+                raise TypeError(f"existence_check must be PredicateData; got {bad}")
+
+
+RowData = UpdateData | DeleteData | InsertData
 
 
 def format_predicate(predicate: PredicateData) -> sql.Composed:
@@ -229,77 +268,74 @@ def format_predicate(predicate: PredicateData) -> sql.Composed:
         )
 
 
-PC = _PredicateComparison
-PD = PredicateData
-ROWS_TO_CLEAN: list[RowData] = [
-    RowData(
-        comment=_Comment.SPELLING,
-        col_name="city",
-        col_val="Simpson Bay Village",
-        dml=_DML.UPDATE,
-        predicate_cols=[
-            PD(
-                col_name="city",
-                col_val="Simson Bay Village",
-                comparison=PC.EQUAL,
-            ),
-            PD(
-                col_name="country",
-                col_val="SX",
-                comparison=PC.EQUAL,
-            ),
-        ],
-        tbl_name="geocoding",
-        result_limit=1,
-        val_is_query=False,
-    ),
-    RowData(
-        comment=_Comment.COORDINATES,
-        col_name="geom",
-        col_val="""
-            ST_Difference(
-                geom,
-                (SELECT ST_Union(geom) FROM tmp_country_bounds_adm1)
-            )""",
-        dml=_DML.UPDATE,
-        predicate_cols=[
-            PD(
-                col_name="alpha2",
-                col_val="CN",
-                comparison=PC.EQUAL,
-            ),
-            PD(
-                col_name="geom",
-                comparison=PC.NOT_NULL,
-            ),
-        ],
-        tbl_name="country",
-        result_limit=1,
-        val_is_query=True,
-    ),
-    RowData(
-        comment=_Comment.ERRATUM,
-        col_name="alpha3",
-        col_val="XKX",
-        dml=_DML.UPDATE,
-        predicate_cols=[
-            PD(
-                col_name="alpha3",
-                col_val="XKO",
-                comparison=PC.EQUAL,
-            ),
-        ],
-        tbl_name="tmp_country_bounds_adm0",
-        result_limit=1,
-        val_is_query=False,
-    ),
-]
-
 SQL_CLEAN_BASE_DEL: sql.SQL = sql.SQL("DELETE FROM {tbl_name} WHERE ")
 SQL_CLEAN_BASE_UPD: sql.SQL = sql.SQL(
     "UPDATE {tbl_name} SET {col_name} = {col_val} WHERE "
 )
-SQL_CLEAN_PREDICATES: sql.SQL = sql.SQL("{col_name} {comparison} {col_val}")
+
+
+def _make_insert_query(row: InsertData) -> sql.Composed:
+    col_names = sql.SQL(", ").join(sql.Identifier(k) for k in row.col_vals)
+    col_values = sql.SQL(", ").join(sql.Literal(v) for v in row.col_vals.values())
+
+    if row.existence_check:
+        predicates = sql.SQL(" AND ").join(
+            format_predicate(p) for p in row.existence_check
+        )
+        insert_part = sql.SQL(
+            "INSERT INTO {tbl_name} ({col_names}) SELECT {col_vals}"
+        ).format(
+            tbl_name=sql.Identifier(row.tbl_name),
+            col_names=col_names,
+            col_vals=col_values,
+        )
+        not_exists_part = sql.SQL(
+            " WHERE NOT EXISTS (SELECT 1 FROM {tbl_name} WHERE {predicates})"
+        ).format(
+            tbl_name=sql.Identifier(row.tbl_name),
+            predicates=predicates,
+        )
+        return insert_part + not_exists_part
+
+    elif row.conflict_cols:
+        conflict_targets = sql.SQL(", ").join(
+            sql.Identifier(c) for c in row.conflict_cols
+        )
+        if row.conflict_action is _ConflictAction.UPDATE:
+            update_cols = [k for k in row.col_vals if k not in row.conflict_cols]
+            set_clause = sql.SQL(", ").join(
+                sql.SQL("{col} = EXCLUDED.{col}").format(col=sql.Identifier(c))
+                for c in update_cols
+            )
+            return sql.SQL(
+                "INSERT INTO {tbl_name} ({col_names}) VALUES ({col_vals}) "
+                "ON CONFLICT ({conflict_cols}) DO UPDATE SET {set_clause}"
+            ).format(
+                tbl_name=sql.Identifier(row.tbl_name),
+                col_names=col_names,
+                col_vals=col_values,
+                conflict_cols=conflict_targets,
+                set_clause=set_clause,
+            )
+        else:  # NOTHING
+            return sql.SQL(
+                "INSERT INTO {tbl_name} ({col_names}) VALUES ({col_vals}) "
+                "ON CONFLICT ({conflict_cols}) DO NOTHING"
+            ).format(
+                tbl_name=sql.Identifier(row.tbl_name),
+                col_names=col_names,
+                col_vals=col_values,
+                conflict_cols=conflict_targets,
+            )
+
+    else:
+        return sql.SQL(
+            "INSERT INTO {tbl_name} ({col_names}) VALUES ({col_vals})"
+        ).format(
+            tbl_name=sql.Identifier(row.tbl_name),
+            col_names=col_names,
+            col_vals=col_values,
+        )
 
 
 def make_queries(rows: list[RowData]) -> list[sql.Composed]:
@@ -307,32 +343,24 @@ def make_queries(rows: list[RowData]) -> list[sql.Composed]:
     queries: list[sql.Composed] = []
 
     for row in rows:
-        predicate_clauses = [
-            format_predicate(predicate) for predicate in row.predicate_cols
-        ]
+        if isinstance(row, InsertData):
+            queries.append(_make_insert_query(row))
+            continue
+
+        predicate_clauses = [format_predicate(p) for p in row.predicate_cols]
         predicates = sql.SQL(" AND ").join(predicate_clauses)
 
-        if row.dml is _DML.UPDATE:
+        if isinstance(row, UpdateData):
             base_query = SQL_CLEAN_BASE_UPD.format(
                 tbl_name=sql.Identifier(row.tbl_name),
                 col_name=sql.Identifier(row.col_name),
-                col_val=(
-                    sql.Literal(row.col_val)
-                    if not row.val_is_query
-                    else sql.SQL(row.col_val)
-                ),
+                col_val=sql.Literal(row.col_val),
             )
-        elif row.dml is _DML.DELETE:
+        else:  # DeleteData
             base_query = SQL_CLEAN_BASE_DEL.format(
                 tbl_name=sql.Identifier(row.tbl_name),
             )
-        elif row.dml is _DML.INSERT:
-            raise NotImplementedError("INSERT operations not yet implemented")
-        else:
-            raise ValueError(f"Unsupported _DML operation: {row.dml}")
 
-        full_query = base_query + predicates
-
-        queries.append(full_query)
+        queries.append(base_query + predicates)
 
     return queries
