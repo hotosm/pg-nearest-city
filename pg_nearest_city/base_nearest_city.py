@@ -1,7 +1,7 @@
 """Base code used in async and sync implementation alike."""
 
+import logging
 import os
-import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -46,9 +46,8 @@ class DbConfig:
                 f"Missing required database config fields: {', '.join(missing_fields)}"
             )
         if not self.password:
-            warnings.warn(
-                "No database password configured; connecting without a password",
-                stacklevel=2,
+            logging.getLogger("pg_nearest_city").debug(
+                "No database password configured; connecting without a password"
             )
 
     def get_connection_string(self) -> str:

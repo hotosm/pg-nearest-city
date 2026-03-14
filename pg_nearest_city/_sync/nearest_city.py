@@ -89,20 +89,21 @@ class NearestCity:
                     return
 
                 missing = status.get_missing_components()
-                self._logger.warning(
-                    "Database not ready. Missing: %s", ", ".join(missing)
-                )
 
                 # Attempt auto-import from dump
                 dump_path = BaseNearestCity._find_dump_path(self._dump_path)
                 if dump_path:
-                    self._logger.info(f"Auto-importing from dump: {dump_path}")
+                    self._logger.warning(
+                        "Database not ready (missing: %s); importing from dump: %s",
+                        ", ".join(missing),
+                        dump_path,
+                    )
                     self._import_from_dump(dump_path)
 
                     # Re-check after import
                     status = self._check_initialization_status(cur)
                     if status.is_fully_initialized:
-                        self._logger.info("Database initialized from dump file")
+                        self._logger.warning("Database initialized from dump file")
                         return
 
                 raise RuntimeError(
