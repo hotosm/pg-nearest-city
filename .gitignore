@@ -8,12 +8,24 @@ NEWS
 *__pycache__/
 
 # output files
+*.dbf
+*.fgb
+*.geojson
+*.gpkg
+*.html
+*.log
+*.osm
+*.pbf
+*.prj
+*.shp
+*.shx
 *.txt
 *.xml
-*.geojson
-*.pbf
 *.xml
-*.html
+*.zip
+
+# GADM
+gadm*/
 
 # Python builds
 build
