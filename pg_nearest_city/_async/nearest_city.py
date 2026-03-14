@@ -1,13 +1,12 @@
 """Main logic."""
 
-import gzip
 import logging
-from typing import Optional
-from importlib import resources
+import shutil
+import subprocess
 from textwrap import dedent, fill
+from typing import Optional
 
 import psycopg
-from psycopg import AsyncCursor
 
 from pg_nearest_city.base_nearest_city import (
     BaseNearestCity,
@@ -22,36 +21,30 @@ logger = logging.getLogger("pg_nearest_city")
 class AsyncNearestCity:
     """Reverse geocoding to the nearest city over 1000 population."""
 
+    connection: psycopg.AsyncConnection
+
     def __init__(
         self,
         db: psycopg.AsyncConnection | DbConfig | None = None,
         logger: Optional[logging.Logger] = None,
+        dump_path: str | None = None,
     ):
-        """Initialize reverse geocoder with an existing AsyncConnection.
+        """Initialize reverse geocoder.
 
         Args:
-            db: An existing psycopg AsyncConnection
-            connection: psycopg.AsyncConnection
-            logger: Optional custom logger. If not provided, uses package logger.
+            db: An existing psycopg AsyncConnection or DbConfig
+            logger: Optional custom logger.
+            dump_path: Optional path to a pg_dump file for auto-import.
         """
-        # Allow users to provide their own logger while having a sensible default
         self._logger = logger or logging.getLogger("pg_nearest_city")
         self._db = db
-        self.connection: psycopg.AsyncConnection = None
+        self._dump_path = dump_path
         self._is_external_connection = False
         self._is_initialized = False
-
-        self.cities_file = resources.files("pg_nearest_city.data").joinpath(
-            "cities_1000_simple.txt.gz"
-        )
-        self.voronoi_file = resources.files("pg_nearest_city.data").joinpath(
-            "voronois.wkb.gz"
-        )
 
     async def __aenter__(self):
         """Open the context manager."""
         self.connection = await self.get_connection(self._db)
-        # Create the relevant tables and validate
         await self.initialize()
         self._is_initialized = True
         return self
@@ -60,29 +53,30 @@ class AsyncNearestCity:
         """Close the context manager."""
         if self.connection and not self._is_external_connection:
             await self.connection.close()
-        self._initialized = False
+        self._is_initialized = False
 
     async def get_connection(
         self,
         db: Optional[psycopg.AsyncConnection | DbConfig] = None,
     ) -> psycopg.AsyncConnection:
         """Determine the database connection to use."""
-        self._is_external_connection = isinstance(db, psycopg.AsyncConnection)
-        is_db_config = isinstance(db, DbConfig)
-
-        if self._is_external_connection:
+        if isinstance(db, psycopg.AsyncConnection):
+            self._is_external_connection = True
             return db
-        elif is_db_config:
+        self._is_external_connection = False
+        if isinstance(db, DbConfig):
             return await psycopg.AsyncConnection.connect(db.get_connection_string())
-        else:
-            # Fallback to env var extraction, or defaults for testing
-            return await psycopg.AsyncConnection.connect(
-                DbConfig().get_connection_string(),
-            )
+        return await psycopg.AsyncConnection.connect(
+            DbConfig().get_connection_string(),
+        )
 
     async def initialize(self) -> None:
-        """Initialize the geocoding database with validation checks."""
-        if not self.connection:
+        """Initialize the geocoding database with validation checks.
+
+        Checks for country and geocoding tables. If not present,
+        attempts auto-import from a dump file.
+        """
+        if not getattr(self, "connection", None):
             self._inform_user_if_not_context_manager()
 
         try:
@@ -94,47 +88,66 @@ class AsyncNearestCity:
                     self._logger.info("Database already properly initialized")
                     return
 
-                if status.has_table and not status.is_fully_initialized:
-                    missing = status.get_missing_components()
-                    self._logger.warning(
-                        "Database needs repair. Missing components: %s",
-                        ", ".join(missing),
-                    )
-                    self._logger.info("Reinitializing from scratch")
-                    await cur.execute("DROP TABLE IF EXISTS pg_nearest_city_geocoding;")
+                missing = status.get_missing_components()
+                self._logger.warning(
+                    "Database not ready. Missing: %s", ", ".join(missing)
+                )
 
-                self._logger.info("Creating geocoding table")
-                await self._create_geocoding_table(cur)
+                # Attempt auto-import from dump
+                dump_path = BaseNearestCity._find_dump_path(self._dump_path)
+                if dump_path:
+                    self._logger.info(f"Auto-importing from dump: {dump_path}")
+                    self._import_from_dump(dump_path)
 
-                self._logger.info("Importing city data")
-                await self._import_cities(cur)
+                    # Re-check after import
+                    status = await self._check_initialization_status(cur)
+                    if status.is_fully_initialized:
+                        self._logger.info("Database initialized from dump file")
+                        return
 
-                self._logger.info("Processing Voronoi polygons")
-                await self._import_voronoi_polygons(cur)
+                raise RuntimeError(
+                    "Database is not initialized and no dump file found. "
+                    "Run the bootstrap pipeline first "
+                    "(python -m pg_nearest_city.scripts.load_database), "
+                    f"or provide a dump file via {BaseNearestCity.DUMP_ENV_VAR} "
+                    "env var or dump_path constructor arg."
+                )
 
-                self._logger.info("Creating spatial index")
-                await self._create_spatial_index(cur)
-
-                await self.connection.commit()
-
-                self._logger.debug("Verifying final initialization state")
-                final_status = await self._check_initialization_status(cur)
-                if not final_status.is_fully_initialized:
-                    missing = final_status.get_missing_components()
-                    self._logger.error(
-                        "Initialization failed final validation. Missing: %s",
-                        ", ".join(missing),
-                    )
-                    raise RuntimeError(
-                        "Initialization failed final validation. "
-                        f"Missing components: {', '.join(missing)}"
-                    )
-
-                self._logger.info("Initialization complete and verified")
-
+        except RuntimeError:
+            raise
         except Exception as e:
             self._logger.error("Database initialization failed: %s", str(e))
             raise RuntimeError(f"Database initialization failed: {str(e)}") from e
+
+    def _import_from_dump(self, dump_path: str) -> None:
+        """Import database from a pg_dump file using pg_restore."""
+        if not shutil.which("pg_restore"):
+            raise RuntimeError(
+                "pg_restore not found - please install PostgreSQL client tools"
+            )
+
+        conn_info = self.connection.info
+        cmd = [
+            "pg_restore",
+            "--no-owner",
+            "--no-privileges",
+            f"--host={conn_info.host}",
+            f"--port={conn_info.port}",
+            f"--username={conn_info.user}",
+            f"--dbname={conn_info.dbname}",
+            dump_path,
+        ]
+        env = None
+        if conn_info.password:
+            import os
+
+            env = {**os.environ, "PGPASSWORD": conn_info.password}
+
+        try:
+            subprocess.run(cmd, check=True, env=env)
+        except subprocess.CalledProcessError as e:
+            self._logger.error(f"pg_restore failed: {e}")
+            raise RuntimeError(f"Failed to restore from dump: {e}") from e
 
     def _inform_user_if_not_context_manager(self):
         """Raise an error if the context manager was not used."""
@@ -151,7 +164,9 @@ class AsyncNearestCity:
             )
 
     async def query(self, lat: float, lon: float) -> Optional[Location]:
-        """Find the nearest city to the given coordinates using Voronoi regions.
+        """Find the nearest city to the given coordinates.
+
+        Uses ST_Covers + lateral join on country and geocoding tables.
 
         Args:
             lat: Latitude in degrees (-90 to 90)
@@ -164,10 +179,8 @@ class AsyncNearestCity:
             ValueError: If coordinates are out of valid ranges
             RuntimeError: If database query fails
         """
-        # Throw an error if not used in 'with' block
         self._inform_user_if_not_context_manager()
 
-        # Validate coordinate ranges
         BaseNearestCity.validate_coordinates(lon, lat)
 
         try:
@@ -194,121 +207,28 @@ class AsyncNearestCity:
         self,
         cur: psycopg.AsyncCursor,
     ) -> InitializationStatus:
-        """Check the status and integrity of the geocoding database.
-
-        Performs essential validation checks to ensure the database is
-        properly initialized and contains valid data.
-        """
+        """Check the status and integrity of the geocoding database."""
         status = InitializationStatus()
 
         # Check table existence
-        await cur.execute(BaseNearestCity._get_tableexistence_query())
-        table_exists = await cur.fetchone()
-        status.has_table = bool(table_exists and table_exists[0])
+        await cur.execute(BaseNearestCity._get_tables_existence_query())
+        result = await cur.fetchone()
+        status.has_country_table = bool(result and result[0])
+        status.has_geocoding_table = bool(result and result[1])
 
-        # If table doesn't exist, we can't check other properties
-        if not status.has_table:
-            return status
-
-        # Check table structure
-        await cur.execute(BaseNearestCity._get_table_structure_query())
-        columns = {col: dtype for col, dtype in await cur.fetchall()}
-        expected_columns = {
-            "city": "character varying",
-            "country": "character varying",
-            "lat": "numeric",
-            "lon": "numeric",
-            "geom": "geometry",
-            "voronoi": "geometry",
-        }
-        status.has_valid_structure = all(col in columns for col in expected_columns)
-        # If table doesn't have valid structure, we can't check other properties
-        if not status.has_valid_structure:
+        if not (status.has_country_table and status.has_geocoding_table):
             return status
 
         # Check data completeness
         await cur.execute(BaseNearestCity._get_data_completeness_query())
         counts = await cur.fetchone()
-        total_cities, cities_with_voronoi = counts
+        if counts is not None:
+            status.has_country_data = counts[0] > 0
+            status.has_geocoding_data = counts[1] > 0
 
-        status.has_data = total_cities > 0
-        status.has_complete_voronoi = cities_with_voronoi == total_cities
-
-        # Check spatial index
+        # Check spatial indices
         await cur.execute(BaseNearestCity._get_spatial_index_check_query())
-        has_index = await cur.fetchone()
-        status.has_spatial_index = bool(has_index and has_index[0])
+        idx_result = await cur.fetchone()
+        status.has_spatial_index = bool(idx_result and idx_result[0] and idx_result[1])
 
         return status
-
-    async def _import_cities(self, cur: AsyncCursor):
-        if not self.cities_file.exists():
-            raise FileNotFoundError(f"Cities file not found: {self.cities_file}")
-
-        """Import city data using COPY protocol."""
-        async with cur.copy(
-            "COPY pg_nearest_city_geocoding(city, country, lat, lon) FROM STDIN"
-        ) as copy:
-            with gzip.open(self.cities_file, "r") as f:
-                copied_bytes = 0
-                while data := f.read(8192):
-                    await copy.write(data)
-                    copied_bytes += len(data)
-                self._logger.info(f"Imported {copied_bytes:,} bytes of city data")
-
-    async def _create_geocoding_table(self, cur: AsyncCursor):
-        """Create the main table."""
-        await cur.execute("""
-            CREATE TABLE pg_nearest_city_geocoding (
-                city varchar,
-                country varchar,
-                lat decimal,
-                lon decimal,
-                geom geometry(Point,4326)
-                  GENERATED ALWAYS AS (ST_SetSRID(ST_MakePoint(lon, lat), 4326))
-                  STORED,
-                voronoi geometry(Polygon,4326)
-            );
-        """)
-
-    async def _import_voronoi_polygons(self, cur: AsyncCursor):
-        """Import and integrate Voronoi polygons into the main table."""
-        if not self.voronoi_file.exists():
-            raise FileNotFoundError(f"Voronoi file not found: {self.voronoi_file}")
-
-        # First create temporary table for the import
-        await cur.execute("""
-            CREATE TEMP TABLE voronoi_import (
-                city text,
-                country text,
-                wkb bytea
-            );
-        """)
-
-        # Import the binary WKB data
-        async with cur.copy(
-            "COPY voronoi_import (city, country, wkb) FROM STDIN",
-        ) as copy:
-            with gzip.open(self.voronoi_file, "rb") as f:
-                while data := f.read(8192):
-                    await copy.write(data)
-
-        # Update main table with Voronoi geometries
-        await cur.execute("""
-            UPDATE pg_nearest_city_geocoding g
-            SET voronoi = ST_GeomFromWKB(v.wkb, 4326)
-            FROM voronoi_import v
-            WHERE g.city = v.city
-            AND g.country = v.country;
-        """)
-
-        # Clean up temporary table
-        await cur.execute("DROP TABLE voronoi_import;")
-
-    async def _create_spatial_index(self, cur: AsyncCursor):
-        """Create a spatial index on the Voronoi polygons for efficient queries."""
-        await cur.execute("""
-            CREATE INDEX geocoding_voronoi_idx
-            ON pg_nearest_city_geocoding
-            USING GIST (voronoi);
-        """)
