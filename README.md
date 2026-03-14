@@ -68,8 +68,6 @@ The pg-nearest-city approach:
   to load the data into the database (which could be handled at
   web server startup).
 
-See [benchmarks](./benchmark-results.md) for more details.
-
 > [!NOTE]
 > We don't discuss web based geocoding services here, such as Nominatim, as simple
 > offline reverse-geocoding has two purposes:
@@ -191,14 +189,6 @@ Run the tests with:
 
 ```bash
 docker compose run --rm code pytest
-```
-
-## Benchmarks
-
-Run the benchmarks with:
-
-```bash
-docker compose run --rm benchmark
 ```
 
 ## Voronoi Generator
