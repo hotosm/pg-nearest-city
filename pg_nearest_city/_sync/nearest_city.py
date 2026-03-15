@@ -1,8 +1,7 @@
 """Main logic."""
 
 import logging
-import shutil
-import subprocess
+from pathlib import Path
 from textwrap import dedent, fill
 from typing import Optional
 
@@ -14,6 +13,7 @@ from pg_nearest_city.base_nearest_city import (
     InitializationStatus,
     Location,
 )
+from pg_nearest_city.utils import open_compressed
 
 logger = logging.getLogger("pg_nearest_city")
 
@@ -27,18 +27,18 @@ class NearestCity:
         self,
         db: psycopg.Connection | DbConfig | None = None,
         logger: Optional[logging.Logger] = None,
-        dump_path: str | None = None,
+        data_path: str | None = None,
     ):
         """Initialize reverse geocoder.
 
         Args:
             db: An existing psycopg Connection or DbConfig
             logger: Optional custom logger.
-            dump_path: Optional path to a pg_dump file for auto-import.
+            data_path: Optional path to directory containing exported CSV data files.
         """
         self._logger = logger or logging.getLogger("pg_nearest_city")
         self._db = db
-        self._dump_path = dump_path
+        self._data_path = data_path
         self._is_external_connection = False
         self._is_initialized = False
 
@@ -74,45 +74,45 @@ class NearestCity:
         """Initialize the geocoding database with validation checks.
 
         Checks for country and geocoding tables. If not present,
-        attempts auto-import from a dump file.
+        attempts auto-import from exported CSV data files.
         """
         if not getattr(self, "connection", None):
             self._inform_user_if_not_context_manager()
 
         try:
+            self._logger.info("Starting database initialization check")
             with self.connection.cursor() as cur:
-                self._logger.info("Starting database initialization check")
                 status = self._check_initialization_status(cur)
 
+            if status.is_fully_initialized:
+                self._logger.info("Database already properly initialized")
+                return
+
+            missing = status.get_missing_components()
+
+            # Attempt auto-import from data directory
+            data_path = BaseNearestCity._find_data_path(self._data_path)
+            if data_path:
+                self._logger.warning(
+                    "Database not ready (missing: %s); importing from: %s",
+                    ", ".join(missing),
+                    data_path,
+                )
+                self._import_from_data(data_path)
+
+                # Re-check after import
+                with self.connection.cursor() as cur:
+                    status = self._check_initialization_status(cur)
                 if status.is_fully_initialized:
-                    self._logger.info("Database already properly initialized")
+                    self._logger.warning("Database initialized from data files")
                     return
 
-                missing = status.get_missing_components()
-
-                # Attempt auto-import from dump
-                dump_path = BaseNearestCity._find_dump_path(self._dump_path)
-                if dump_path:
-                    self._logger.warning(
-                        "Database not ready (missing: %s); importing from dump: %s",
-                        ", ".join(missing),
-                        dump_path,
-                    )
-                    self._import_from_dump(dump_path)
-
-                    # Re-check after import
-                    status = self._check_initialization_status(cur)
-                    if status.is_fully_initialized:
-                        self._logger.warning("Database initialized from dump file")
-                        return
-
-                raise RuntimeError(
-                    "Database is not initialized and no dump file found. "
-                    "Run the bootstrap pipeline first "
-                    "(python -m pg_nearest_city.scripts.load_database), "
-                    f"or provide a dump file via {BaseNearestCity.DUMP_ENV_VAR} "
-                    "env var or dump_path constructor arg."
-                )
+            raise RuntimeError(
+                "Database is not initialized and no data files found. "
+                "Run the bootstrap pipeline first (pgnearest-load), "
+                f"or provide a data directory via {BaseNearestCity.DATA_ENV_VAR} "
+                "env var or data_path constructor arg."
+            )
 
         except RuntimeError:
             raise
@@ -120,35 +120,45 @@ class NearestCity:
             self._logger.error("Database initialization failed: %s", str(e))
             raise RuntimeError(f"Database initialization failed: {str(e)}") from e
 
-    def _import_from_dump(self, dump_path: str) -> None:
-        """Import database from a pg_dump file using pg_restore."""
-        if not shutil.which("pg_restore"):
-            raise RuntimeError(
-                "pg_restore not found - please install PostgreSQL client tools"
-            )
+    def _import_from_data(self, data_path: str) -> None:
+        """Bootstrap the database from exported CSV data files."""
+        data_dir = Path(data_path)
+        country_file = BaseNearestCity._find_data_file(
+            data_dir, BaseNearestCity.COUNTRY_DATA_STEM
+        )
+        geocoding_file = BaseNearestCity._find_data_file(
+            data_dir, BaseNearestCity.GEOCODING_DATA_STEM
+        )
+        if not country_file or not geocoding_file:
+            raise RuntimeError(f"Data files not found in {data_path}")
 
-        conn_info = self.connection.info
-        cmd = [
-            "pg_restore",
-            "--no-owner",
-            "--no-privileges",
-            f"--host={conn_info.host}",
-            f"--port={conn_info.port}",
-            f"--username={conn_info.user}",
-            f"--dbname={conn_info.dbname}",
-            dump_path,
-        ]
-        env = None
-        if conn_info.password:
-            import os
+        with self.connection.cursor() as cur:
+            # Create schema
+            for stmt in BaseNearestCity._get_bootstrap_sql():
+                cur.execute(stmt)
+            self.connection.commit()
 
-            env = {**os.environ, "PGPASSWORD": conn_info.password}
+            # Import country data (alpha2, alpha3, name, geom as hex WKB)
+            self._logger.info("Importing country data from %s", country_file.name)
+            with open_compressed(country_file) as fh:
+                with cur.copy(BaseNearestCity.COPY_COUNTRY_FROM) as copy:
+                    while data := fh.read(8192):
+                        copy.write(data)
+            self.connection.commit()
 
-        try:
-            subprocess.run(cmd, check=True, env=env)
-        except subprocess.CalledProcessError as e:
-            self._logger.error(f"pg_restore failed: {e}")
-            raise RuntimeError(f"Failed to restore from dump: {e}") from e
+            # Import geocoding data (city, country, lat, lon)
+            self._logger.info("Importing geocoding data from %s", geocoding_file.name)
+            with open_compressed(geocoding_file) as fh:
+                with cur.copy(BaseNearestCity.COPY_GEOCODING_FROM) as copy:
+                    while data := fh.read(8192):
+                        copy.write(data)
+            self.connection.commit()
+
+            # Create indices
+            self._logger.info("Creating indices")
+            for stmt in BaseNearestCity._get_bootstrap_index_sql():
+                cur.execute(stmt)
+            self.connection.commit()
 
     def _inform_user_if_not_context_manager(self):
         """Raise an error if the context manager was not used."""
@@ -159,19 +169,21 @@ class NearestCity:
                 NearestCity must be used within 'with' context.\n
                     For example:\n
                     with NearestCity() as geocoder:\n
-                        details = geocoder.query(lat, lon)
+                        details = geocoder.query(lon, lat)
             """)
                 )
             )
 
-    def query(self, lat: float, lon: float) -> Optional[Location]:
+    def query(self, lon: float, lat: float) -> Optional[Location]:
         """Find the nearest city to the given coordinates.
 
         Uses ST_Covers + lateral join on country and geocoding tables.
+        Coordinates use (lon, lat) order, matching PostGIS convention
+        where longitude is the X axis and latitude is Y.
 
         Args:
-            lat: Latitude in degrees (-90 to 90)
             lon: Longitude in degrees (-180 to 180)
+            lat: Latitude in degrees (-90 to 90)
 
         Returns:
             Location object if a matching city is found, None otherwise
