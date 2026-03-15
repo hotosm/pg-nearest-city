@@ -9,6 +9,7 @@ from enum import Enum
 from graphlib import TopologicalSorter
 from typing import Any, ClassVar
 
+from psycopg import sql
 from psycopg.errors import UndefinedFile
 
 from pg_nearest_city.utils import filter_items, get_all_subclasses
@@ -116,6 +117,45 @@ class Country(BaseTable):
         """Return the CREATE TABLE SQL for this table."""
         return f"""
         CREATE TABLE {cls.name} (
+            id     INT GENERATED ALWAYS AS IDENTITY NOT NULL,
+            alpha2 CHAR(2) NOT NULL,
+            alpha3 CHAR(3) NOT NULL,
+            name   TEXT NOT NULL,
+            geom   GEOMETRY(Polygon,4326) DEFAULT NULL,
+            CONSTRAINT {cls.name}_pkey PRIMARY KEY (id),
+            CONSTRAINT {cls.name}_name_len_chk CHECK (
+                char_length(name) <= 126
+            )
+        )
+        """
+
+    @classmethod
+    def get_indices(cls) -> tuple[Index, ...]:
+        """Return index definitions for this table."""
+        return (
+            Index(tbl_name=cls.name, col_names=["geom"], index_type=IndexType.GIST),
+            Index(tbl_name=cls.name, col_names=["alpha2"], index_type=IndexType.BTREE),
+        )
+
+
+class CountryInit(BaseTable):
+    """CountryInit table class - used for initial data load.
+
+    Stores one MultiPolygon per country before subdivision into the
+    final country table.
+    """
+
+    name = "country_init"
+    drop_first = True
+    is_for_data_load = True
+    is_temp = True
+    is_unlogged = True
+
+    @classmethod
+    def create_sql(cls) -> str:
+        """Return the CREATE TABLE SQL for this table."""
+        return f"""
+        CREATE TABLE {cls.name} (
             alpha2 CHAR(2) NOT NULL,
             alpha3 CHAR(3) NOT NULL,
             name   TEXT NOT NULL,
@@ -136,24 +176,13 @@ class Country(BaseTable):
         )
 
 
-class CountryInit(Country):
-    """CountryInit table class - used for initial data load."""
-
-    name = "country_init"
-    drop_first = True
-    is_for_data_load = True
-    is_temp = True
-    is_unlogged = True
-
-
 class Geocoding(BaseTable):
     """Geocoding table class - main table.
 
     Note:
        The 'country' column name is retained (vs. 'country_code')
        despite being an ISO3166-alpha2 code for backwards compatibility.
-       It is a foreign key to the country.alpha2 column. It may
-       be migrated in the future.
+       It may be migrated in the future.
     """
 
     name = "geocoding"
@@ -184,15 +213,7 @@ class Geocoding(BaseTable):
     @classmethod
     def get_alters(cls) -> tuple[str, ...]:
         """Return ALTER TABLE constraint clauses for this table."""
-        return (
-            f"""
-            CONSTRAINT {cls.name}_country_fkey
-            FOREIGN KEY (country)
-            REFERENCES country (alpha2)
-            ON UPDATE RESTRICT
-            ON DELETE RESTRICT
-        """,
-        )
+        return ()
 
     @classmethod
     def get_indices(cls) -> tuple[Index, ...]:
@@ -203,7 +224,6 @@ class Geocoding(BaseTable):
                 col_names=["country", "geom"],
                 index_type=IndexType.GIST,
             ),
-            Index(tbl_name=cls.name, col_names=["country"], index_type=IndexType.BTREE),
         )
 
 
@@ -456,8 +476,12 @@ def setup_database(conn, logger: logging.Logger | None = None) -> None:
         try:
             for table in get_tables_in_creation_order():
                 if table.drop_first:
-                    exists_clause = "IF EXISTS" if table.safe_ops else ""
-                    cur.execute(f"DROP TABLE {exists_clause} {table.name}")
+                    exists_clause = (
+                        sql.SQL(" IF EXISTS") if table.safe_ops else sql.SQL("")
+                    )
+                    cur.execute(sql.SQL("DROP TABLE{} {}").format(
+                        exists_clause, sql.Identifier(table.name),
+                    ))
 
                 if table.is_externally_defined:
                     _sql = "SELECT 1"
