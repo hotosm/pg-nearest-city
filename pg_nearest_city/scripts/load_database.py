@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from pg_nearest_city.datasets.types import BoundarySource, CompressionAlgorithm
 from pg_nearest_city.db.data_import import Config, DataLoader
 from pg_nearest_city.db.settings import DBConnSettings
 
@@ -32,14 +33,23 @@ def parse_args():
     group_db.add_argument("--db-password", help="Database password")
 
     parser.add_argument(
-        "--cache-dir", default="./cache", help="Directory to cache downloaded files"
+        "--cache-dir", default="/data/cache", help="Directory to cache downloaded files"
     )
     parser.add_argument("--country", help="Filter to specific country code (e.g. IT)")
     parser.add_argument(
-        "--no-cache", action="store_true", help="Don't cache downloaded files"
+        "--boundary-source",
+        choices=[s.value for s in BoundarySource],
+        default=BoundarySource.NATURAL_EARTH.value,
+        help="Country boundary data source (default: NaturalEarth)",
     )
     parser.add_argument(
-        "--no-compress", action="store_true", help="Don't compress output"
+        "--compression",
+        choices=[c.value for c in CompressionAlgorithm],
+        default=CompressionAlgorithm.AUTO.value,
+        help="Compression for exported data (default: auto)",
+    )
+    parser.add_argument(
+        "--no-cache", action="store_true", help="Don't cache downloaded files"
     )
     parser.add_argument(
         "--output-dir", default="/data/output", help="Directory for output files"
@@ -94,10 +104,11 @@ def _should_run(step: Step, skip: set[str] | None, only: set[str] | None) -> boo
 
 
 STEP_NAMES: list[str] = [
+    "00_check_prerequisites",
     "01_setup_db",
     "02_alter_db_params",
     "03_download_geonames",
-    "04_download_gadm",
+    "04_download_boundaries",
     "05_download_geoboundaries",
     "06_clean_geonames",
     "07_set_tables_unlogged",
@@ -115,7 +126,7 @@ STEP_NAMES: list[str] = [
     "19_drop_temp_tables",
     "20_set_tables_logged",
     "21_add_constraints",
-    "22_export_dump",
+    "22_export_data",
 ]
 
 
@@ -141,9 +152,10 @@ def main() -> None:
     dataloader = DataLoader(
         config=Config(
             db_conn_settings=conn_settings,
+            boundary_source=BoundarySource(args.boundary_source),
             cache_dir=Path(args.cache_dir),
             cache_files=not args.no_cache,
-            compress_output=not args.no_compress,
+            compression=CompressionAlgorithm(args.compression),
             output_dir=Path(args.output_dir),
             country_filter=args.country,
         ),
@@ -151,12 +163,18 @@ def main() -> None:
     )
 
     load_steps: list[Step] = [
+        Step("00_prerequisites", dataloader._check_prerequisites, {}),
         Step("01_setup_db", dataloader._setup_db, {}),
         Step("02_alter_db_params", dataloader._alter_db_params, {}),
         Step(
             "03_download_geonames", dataloader._download_geonames, {}, pass_conn=False
         ),
-        Step("04_download_gadm", dataloader._download_gadm, {}, pass_conn=False),
+        Step(
+            "04_download_boundaries",
+            dataloader._download_boundaries,
+            {},
+            pass_conn=False,
+        ),
         Step(
             "05_download_geoboundaries",
             dataloader._download_geoboundaries,
@@ -179,7 +197,7 @@ def main() -> None:
         Step("19_drop_temp_tables", dataloader._drop_temp_tables, {}),
         Step("20_set_tables_logged", dataloader._alter_table_params, {"init": False}),
         Step("21_add_constraints", dataloader._alter_post_tables, {}),
-        Step("22_export_dump", dataloader._export_dump, {}, pass_conn=False),
+        Step("22_export_data", dataloader._export_data, {}, pass_conn=False),
     ]
 
     if args.clean:
