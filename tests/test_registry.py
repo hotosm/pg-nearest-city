@@ -1,6 +1,5 @@
 """Tests for pg_nearest_city.datasets.registry."""
 
-
 from pg_nearest_city.datasets.registry import DatasetEntry, DatasetRegistry, GeoSource
 
 

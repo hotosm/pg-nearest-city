@@ -479,9 +479,12 @@ def setup_database(conn, logger: logging.Logger | None = None) -> None:
                     exists_clause = (
                         sql.SQL(" IF EXISTS") if table.safe_ops else sql.SQL("")
                     )
-                    cur.execute(sql.SQL("DROP TABLE{} {}").format(
-                        exists_clause, sql.Identifier(table.name),
-                    ))
+                    cur.execute(
+                        sql.SQL("DROP TABLE{} {}").format(
+                            exists_clause,
+                            sql.Identifier(table.name),
+                        )
+                    )
 
                 if table.is_externally_defined:
                     _sql = "SELECT 1"

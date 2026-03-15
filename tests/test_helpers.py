@@ -1,6 +1,5 @@
 """Tests for pg_nearest_city.scripts.helpers."""
 
-
 from pg_nearest_city.scripts.helpers import LinkError, make_file_link
 
 

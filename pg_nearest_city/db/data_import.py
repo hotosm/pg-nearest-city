@@ -813,9 +813,7 @@ class DataLoader:
 
         from pg_nearest_city.datasets.types import OverpassBoundaryTarget
 
-        reg_keys = OverpassBoundaryTarget.make_registry_keys(
-            OVERPASS_BOUNDARY_TARGETS
-        )
+        reg_keys = OverpassBoundaryTarget.make_registry_keys(OVERPASS_BOUNDARY_TARGETS)
 
         for target, reg_key in zip(OVERPASS_BOUNDARY_TARGETS, reg_keys, strict=True):
             query_str = target.query.make_data_query()

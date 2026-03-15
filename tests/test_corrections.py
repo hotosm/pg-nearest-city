@@ -1,6 +1,5 @@
 """Tests for pg_nearest_city.db.corrections data definitions."""
 
-
 from pg_nearest_city.db.corrections import (
     BOUNDARY_CORRECTIONS,
     DATA_CORRECTIONS,

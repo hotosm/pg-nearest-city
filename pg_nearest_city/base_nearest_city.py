@@ -297,9 +297,9 @@ class BaseNearestCity:
             )
         for table_cls in tables:
             stmts.append(
-                table_cls.create_sql().replace(
-                    "CREATE TABLE", "CREATE TABLE IF NOT EXISTS"
-                ).encode()
+                table_cls.create_sql()
+                .replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS")
+                .encode()
             )
         return stmts
 
