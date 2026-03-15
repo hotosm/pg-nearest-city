@@ -1,11 +1,12 @@
-"""Test sync geocoder initialization and querying."""
+"""Test async geocoder initialization and querying."""
 
 import os
 
 import psycopg
 import pytest
 
-from pg_nearest_city import DbConfig, Location, NearestCity, geo_test_cases
+
+from pg_nearest_city import NearestCity, DbConfig, Location, geo_test_cases
 
 
 # NOTE we define the fixture here and not in conftest.py to allow
@@ -59,7 +60,7 @@ def test_db_conn_vars_from_env():
 def test_full_initialization_query():
     """Test database initialization and basic query."""
     with NearestCity() as geocoder:
-        location = geocoder.query(40.7128, -74.0060)
+        location = geocoder.query(-74.0060, 40.7128)
 
     assert location is not None
     assert location.city == "New York City"
@@ -70,7 +71,7 @@ def test_init_without_context_manager():
     """Should raise an error if not used in with block."""
     with pytest.raises(RuntimeError):
         geocoder = NearestCity()
-        geocoder.query(40.7128, -74.0060)
+        geocoder.query(-74.0060, 40.7128)
 
 
 def test_check_initialization_fresh_database(fresh_db):
@@ -104,7 +105,7 @@ def test_init_db_at_startup_then_query(test_db):
         pass  # do nothing, initialisation is complete here
 
     with NearestCity() as geocoder:
-        location = geocoder.query(40.7128, -74.0060)
+        location = geocoder.query(-74.0060, 40.7128)
 
     assert location is not None
     assert location.city == "New York City"
@@ -115,17 +116,16 @@ def test_invalid_coordinates(test_db):
     """Test that invalid coordinates are properly handled."""
     with NearestCity(test_db) as geocoder:
         with pytest.raises(ValueError):
-            geocoder.query(91, 0)  # Invalid latitude
+            geocoder.query(0, 91)  # Invalid latitude
 
         with pytest.raises(ValueError):
-            geocoder.query(0, 181)  # Invalid longitude
+            geocoder.query(181, 0)  # Invalid longitude
 
 
 @pytest.mark.parametrize("case", geo_test_cases)
 def test_cities_close_country_boundaries(case):
     with NearestCity() as geocoder:
         location = geocoder.query(lon=case.lon, lat=case.lat)
-        assert location is not None
         assert isinstance(location, Location)
         assert location.city == case.expected_city
         assert location.country == case.expected_country

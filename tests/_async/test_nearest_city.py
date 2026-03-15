@@ -60,7 +60,7 @@ async def test_db_conn_vars_from_env():
 async def test_full_initialization_query():
     """Test database initialization and basic query."""
     async with AsyncNearestCity() as geocoder:
-        location = await geocoder.query(40.7128, -74.0060)
+        location = await geocoder.query(-74.0060, 40.7128)
 
     assert location is not None
     assert location.city == "New York City"
@@ -71,7 +71,7 @@ async def test_init_without_context_manager():
     """Should raise an error if not used in with block."""
     with pytest.raises(RuntimeError):
         geocoder = AsyncNearestCity()
-        await geocoder.query(40.7128, -74.0060)
+        await geocoder.query(-74.0060, 40.7128)
 
 
 async def test_check_initialization_fresh_database(fresh_db):
@@ -105,7 +105,7 @@ async def test_init_db_at_startup_then_query(test_db):
         pass  # do nothing, initialisation is complete here
 
     async with AsyncNearestCity() as geocoder:
-        location = await geocoder.query(40.7128, -74.0060)
+        location = await geocoder.query(-74.0060, 40.7128)
 
     assert location is not None
     assert location.city == "New York City"
@@ -116,17 +116,16 @@ async def test_invalid_coordinates(test_db):
     """Test that invalid coordinates are properly handled."""
     async with AsyncNearestCity(test_db) as geocoder:
         with pytest.raises(ValueError):
-            await geocoder.query(91, 0)  # Invalid latitude
+            await geocoder.query(0, 91)  # Invalid latitude
 
         with pytest.raises(ValueError):
-            await geocoder.query(0, 181)  # Invalid longitude
+            await geocoder.query(181, 0)  # Invalid longitude
 
 
 @pytest.mark.parametrize("case", geo_test_cases)
 async def test_cities_close_country_boundaries(case):
     async with AsyncNearestCity() as geocoder:
         location = await geocoder.query(lon=case.lon, lat=case.lat)
-        assert location is not None
         assert isinstance(location, Location)
         assert location.city == case.expected_city
         assert location.country == case.expected_country

@@ -1,7 +1,7 @@
 import psycopg
 import psycopg.sql
 import pytest  # noqa: F401 (needed after unasync)
-
+import pytest_asyncio
 
 from pg_nearest_city.db.data_cleanup import (
     DeleteData,
@@ -15,20 +15,20 @@ from pg_nearest_city.db.data_cleanup import (
 )
 
 
-@pytest.fixture()
-def test_db(test_db_conn_string):
+@pytest_asyncio.fixture()
+async def test_db(test_db_conn_string):
     """Provide a clean database connection for each test."""
-    conn = psycopg.Connection.connect(test_db_conn_string)
+    conn = await psycopg.AsyncConnection.connect(test_db_conn_string)
 
     yield conn
 
-    conn.close()
+    await conn.close()
 
 
 class TestMakeQueries:
     """Test cases for make_queries function."""
 
-    def test_make_queries_update_single_predicate(self, test_db):
+    async def test_make_queries_update_single_predicate(self, test_db):
         """Test make_queries with single UPDATE operation."""
         predicate = PredicateData(
             col_name="city", comparison=_PredicateComparison.EQUAL, col_val="Old City"
@@ -54,7 +54,7 @@ class TestMakeQueries:
             """"city" = 'Old City'"""
         )
 
-    def test_make_queries_update_multiple_predicates(self, test_db):
+    async def test_make_queries_update_multiple_predicates(self, test_db):
         """Test make_queries with multiple predicates on UPDATE operation."""
         predicates = [
             PredicateData(
@@ -91,7 +91,7 @@ class TestMakeQueries:
             """'1995-05-23' AND '2038-01-01'"""
         )
 
-    def test_make_queries_delete_operation(self, test_db):
+    async def test_make_queries_delete_operation(self, test_db):
         """Test make_queries with DELETE operation."""
         predicate = PredicateData(
             col_name="city",
@@ -114,7 +114,7 @@ class TestMakeQueries:
         query_str = queries[0].as_string(test_db)
         assert query_str == """DELETE FROM "geocoding" WHERE "city" = 'Dallas'"""
 
-    def test_make_queries_insert_plain(self, test_db):
+    async def test_make_queries_insert_plain(self, test_db):
         """Test make_queries with plain INSERT operation."""
         row_data = InsertData(
             correction_type=_CorrectionType.MISSING,
@@ -133,7 +133,7 @@ class TestMakeQueries:
             """INSERT INTO "geocoding" ("city", "country") VALUES ('Campione', 'IT')"""
         )
 
-    def test_make_queries_insert_where_not_exists(self, test_db):
+    async def test_make_queries_insert_where_not_exists(self, test_db):
         """Test make_queries with INSERT ... WHERE NOT EXISTS."""
         row_data = InsertData(
             correction_type=_CorrectionType.MISSING,
@@ -166,7 +166,7 @@ class TestMakeQueries:
             """"city" = 'Campione' AND "country" = 'IT')"""
         )
 
-    def test_make_queries_insert_upsert_do_nothing(self, test_db):
+    async def test_make_queries_insert_upsert_do_nothing(self, test_db):
         """Test make_queries with INSERT ... ON CONFLICT DO NOTHING."""
         row_data = InsertData(
             correction_type=_CorrectionType.MISSING,
@@ -188,7 +188,7 @@ class TestMakeQueries:
             """ON CONFLICT ("city", "country") DO NOTHING"""
         )
 
-    def test_make_queries_insert_upsert_do_update(self, test_db):
+    async def test_make_queries_insert_upsert_do_update(self, test_db):
         """Test make_queries with INSERT ... ON CONFLICT DO UPDATE SET."""
         row_data = InsertData(
             correction_type=_CorrectionType.MISSING,
