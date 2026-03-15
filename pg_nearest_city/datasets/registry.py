@@ -18,6 +18,7 @@ class GeoSource(str, Enum):
     GADM = "GADM"
     GEOBOUNDARIES = "GEOBOUNDARIES"
     GEONAMES = "GEONAMES"
+    NATURAL_EARTH = "NATURAL_EARTH"
     OVERPASS = "OVERPASS"
 
 
@@ -45,12 +46,17 @@ class DatasetRegistry:
     """Simple registry that maps GeoSource types to their URLConfigs."""
 
     def __init__(
-        self, registry_path: Path | None = None, logger: logging.Logger | None = None
+        self,
+        registry_path: Path | None = None,
+        logger: logging.Logger | None = None,
+        persist: bool = True,
     ):
         self.logger = logger or logging.getLogger("dataset_registry")
         self.registry_path = registry_path or Path("dataset_registry.json")
+        self._persist = persist
         self.entries: dict[str, DatasetEntry] = {}
-        self._load()
+        if self._persist:
+            self._load()
 
     def _load(self) -> None:
         """Load registry from file."""
@@ -98,7 +104,8 @@ class DatasetRegistry:
             url=url,
         )
         self.entries[filename] = entry
-        self._save()
+        if self._persist:
+            self._save()
         self.logger.info(f"Registered {geosource.value}: {filename}")
 
     def get(self, filename: str) -> DatasetEntry | None:

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-from .types import EPSGCode, GeonamesColumn
+from .types import (
+    EPSGCode,
+    GeonamesColumn,
+)
 from .url_config import URLConfig
 
 
@@ -46,6 +49,22 @@ class CityDataset:
         object.__setattr__(
             self, "header", [x.lower() for x in GeonamesColumn.__members__.keys()]
         )
+
+
+@dataclass(frozen=True, slots=True)
+class PromotedTerritory:
+    """An ADM1 region to promote to a standalone ADM0-level country.
+
+    alpha3: ISO 3166-1 alpha-3 code for the promoted territory.
+    gid1: Key matching the gid1 column in tmp_country_bounds_adm1.
+    name: Country name.
+    parent_alpha3: Alpha-3 of the parent country whose polygon will be trimmed.
+    """
+
+    alpha3: str
+    gid1: str
+    name: str
+    parent_alpha3: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,9 +128,63 @@ GADM_1_DATASET = CountryDataset(
 )
 
 # ---------------------------------------------------------------------------
+# Natural Earth (country boundaries; alternative to GADM)
+# ---------------------------------------------------------------------------
+NE_COUNTRIES_URLCONFIG = URLConfig(
+    url="https://naciscdn.org/naturalearth/10m/cultural/ne_10m_admin_0_countries.zip"
+)
+
+NE_ADM1_URLCONFIG = URLConfig(
+    url="https://naciscdn.org/naturalearth/10m/cultural/ne_10m_admin_1_states_provinces.zip"
+)
+
+NE_COUNTRIES_DATASET = CountryDataset(
+    alpha3_column="ADM0_A3",
+    adm0_name_column="NAME",
+)
+
+NE_ADM1_DATASET = CountryDataset(
+    alpha3_column="adm0_a3",
+    adm1_column="adm1_code",
+    adm0_name_column="admin",
+    adm1_name_column="name",
+)
+
+# ---------------------------------------------------------------------------
+# ADM1-to-ADM0 promotions
+# Regions that exist only in the ADM1 layer of a given boundary source but
+# should be treated as standalone countries.  The gid1 values are
+# source-specific (GADM uses "CHN.HKG", NE uses "FRA-2000", etc.).
+# ---------------------------------------------------------------------------
+GADM_PROMOTED_TERRITORIES: list[PromotedTerritory] = [
+    PromotedTerritory(
+        alpha3="HKG", gid1="CHN.HKG", name="Hong Kong", parent_alpha3="CHN"
+    ),
+    PromotedTerritory(alpha3="MAC", gid1="CHN.MAC", name="Macau", parent_alpha3="CHN"),
+]
+
+NE_PROMOTED_TERRITORIES: list[PromotedTerritory] = [
+    PromotedTerritory(
+        alpha3="GLP", gid1="FRA-4603", name="Guadeloupe", parent_alpha3="FRA"
+    ),
+    PromotedTerritory(
+        alpha3="GUF", gid1="FRA-2000", name="French Guiana", parent_alpha3="FRA"
+    ),
+    PromotedTerritory(
+        alpha3="MTQ", gid1="FRA-1442", name="Martinique", parent_alpha3="FRA"
+    ),
+    PromotedTerritory(
+        alpha3="MYT", gid1="FRA-4602", name="Mayotte", parent_alpha3="FRA"
+    ),
+    PromotedTerritory(
+        alpha3="REU", gid1="FRA-4601", name="Réunion", parent_alpha3="FRA"
+    ),
+]
+
+# ---------------------------------------------------------------------------
 # Overpass
-# Overpass support is available for targeted boundary queries; currently
-# using GeoBoundaries for corrections.
+# Used as a fallback boundary source for territories absent from both
+# Natural Earth and GeoBoundaries.
 # ---------------------------------------------------------------------------
 OVERPASS_URLCONFIG = URLConfig(
     url="https://maps.mail.ru/osm/tools/overpass/api/interpreter"

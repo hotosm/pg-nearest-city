@@ -5,7 +5,47 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from hashlib import sha256
-from typing import Iterable, Literal, Mapping, cast
+from typing import Iterable, Literal, Mapping, Sequence, cast
+
+
+class BoundarySource(str, Enum):
+    """Supported country boundary data sources."""
+
+    GADM = "gadm"
+    NATURAL_EARTH = "naturalearth"
+
+
+class CompressionAlgorithm(str, Enum):
+    """Supported compression algorithms for exported data.
+
+    AUTO selects based on the boundary source and available compressors:
+      - GADM (large data): zstd for speed, fallback to gzip.
+      - NaturalEarth (small data): xz for ratio, fallback to bz2/gzip.
+    """
+
+    AUTO = "auto"
+    GZIP = "gzip"
+    BZ2 = "bz2"
+    XZ = "xz"
+    ZSTD = "zstd"
+
+    @property
+    def extension(self) -> str:
+        """Return the file extension for this algorithm.
+
+        Raises ValueError if called on AUTO (must be resolved first).
+        """
+        _map = {
+            self.GZIP: ".gz",
+            self.BZ2: ".bz2",
+            self.XZ: ".xz",
+            self.ZSTD: ".zst",
+        }
+        if self not in _map:
+            raise ValueError(
+                f"Cannot get extension for {self.value!r}; resolve AUTO first"
+            )
+        return _map[self]
 
 
 class DownloadOutcome(str, Enum):
@@ -101,6 +141,52 @@ class ZipFileStatus(str, Enum):
     MISSING = "MISSING"
     NO_FILE_NAMES = "NO_FILE_NAMES"
     OK = "OK"
+
+
+@dataclass(frozen=True, slots=True)
+class OverpassBoundaryTarget:
+    """A country boundary to fetch from Overpass when no other source has it.
+
+    alpha2: ISO 3166-1 alpha-2 country code.
+    alpha3: ISO 3166-1 alpha-3 country code.
+    name:   Country name for import into country_init.
+    query:  Pre-built OverpassQL query (defined after OverpassQL below).
+    """
+
+    alpha2: str
+    alpha3: str
+    name: str
+    query: "OverpassQL"
+
+    @property
+    def registry_key(self) -> str:
+        """Human-readable registry key, matching GeoBoundaries convention."""
+        return f"overpass_{self.alpha3}".lower()
+
+    @property
+    def query_hash(self) -> str:
+        """SHA256 hex digest of the Overpass query, for change detection."""
+        return sha256(self.query.make_data_query().encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def make_registry_keys(
+        targets: Sequence[OverpassBoundaryTarget],
+    ) -> list[str]:
+        """Return unique registry keys, one per target.
+
+        Keys follow the pattern ``overpass_{alpha3}``, paralleling
+        the GeoBoundaries ``geoboundaries_{release}_{iso}_{adm}``
+        convention.  If multiple targets share the same alpha3, a
+        numeric suffix (``_2``, ``_3``, ...) is appended.
+        """
+        seen: dict[str, int] = {}
+        keys: list[str] = []
+        for t in targets:
+            base = t.registry_key
+            count = seen.get(base, 0)
+            seen[base] = count + 1
+            keys.append(base if count == 0 else f"{base}_{count + 1}")
+        return keys
 
 
 class OverpassQueryMem(int, Enum):
