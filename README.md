@@ -62,11 +62,15 @@ Simple alternatives:
 
 The pg-nearest-city approach:
 
-- Is approximately ~20x more performant (45ms --> 2ms).
+- Is approximately ~450x more performant (45ms --> 0.1ms).
 - Has a small ~8MB memory footprint, compared to ~260MB.
-- However it has a one-time initialisation penalty of approximately 16s
+  - Depends on the selected baseline dataset and compression algorithm:
+    GADM when compressed is ~25MB.
+- However it has a one-time initialisation penalty of approximately 30s-4m
   to load the data into the database (which could be handled at
   web server startup).
+  - As with the memory footprint, this depends on the baseline dataset
+    and compression algorithm selected.
 
 > [!NOTE]
 > We don't discuss web based geocoding services here, such as Nominatim, as simple
@@ -84,16 +88,15 @@ The pg-nearest-city approach:
 
 ### How This Package Works
 
-- Ingest
-  [geonames.org](https://data.opendatasoft.com/explore/dataset/geonames-all-cities-with-a-population-1000%40public/export/?disjunctive.cou_name_en)
-  CSV data for cities over 1000 population.
-- Create voronoi polygons based on city geopoints.
-- Bundle the voronoi data with this package and load into Postgis.
-- Query the loaded voronoi data with a given geopoint, returning the city.
-
-The diagram below should give a good indication for how this works:
-
-![voronoi_italy](./voronoi_italy.jpg)
+- Ingest [GeoNames](https://www.geonames.org/) cities500 data (cities with population > 500).
+- Ingest country boundary polygons from either [GADM](https://gadm.org/) or
+  [Natural Earth](https://www.naturalearthdata.com/).
+- Apply [GeoBoundaries](https://www.geoboundaries.org/) corrections for
+  inaccurate upstream geometry (e.g. disputed territories, overseas regions).
+- Clean and normalise country data (spelling fixes, ISO 3166-1 alignment, etc.).
+- Simplify geometry with PostGIS `ST_Subdivide` to shrink size and speed up queries.
+- Query: use `ST_Covers` to identify the covering country polygon, then a KNN
+  lateral join to find the nearest city within that country.
 
 ## Usage
 
@@ -108,6 +111,10 @@ pip install pg-nearest-city
 
 ### Run The Code
 
+> [!NOTE]
+> Coordinates use **(lon, lat)** order throughout, matching the GIS / PostGIS
+> convention where longitude is the X axis and latitude is Y.
+
 #### Async
 
 ```python
@@ -117,7 +124,7 @@ from pg_nearest_city import AsyncNearestCity
 db = await get_db_connection()
 
 async with AsyncNearestCity(db) as geocoder:
-    location = await geocoder.query(40.7128, -74.0060)
+    location = await geocoder.query(-74.0060, 40.7128)
 
 print(location.city)
 # "New York City"
@@ -134,7 +141,7 @@ from pg_nearest_city import NearestCity
 db = get_db_connection()
 
 with NearestCity(db) as geocoder:
-    location = geocoder.query(40.7128, -74.0060)
+    location = geocoder.query(-74.0060, 40.7128)
 
 print(location.city)
 # "New York City"
@@ -161,7 +168,7 @@ db_config = DbConfig(
 )
 
 async with AsyncNearestCity(db_config) as geocoder:
-    location = await geocoder.query(40.7128, -74.0060)
+    location = await geocoder.query(-74.0060, 40.7128)
 ```
 
 - Or alternatively as variables from your system environment:
@@ -180,56 +187,68 @@ then
 from pg_nearest_city import AsyncNearestCity
 
 async with AsyncNearestCity() as geocoder:
-    location = await geocoder.query(40.7128, -74.0060)
+    location = await geocoder.query(-74.0060, 40.7128)
 ```
 
 ## Testing
 
-Run the tests with:
+Via Docker:
 
 ```bash
 docker compose run --rm code pytest
 ```
 
-## Voronoi Generator
-
-### Overview
-
-The pg-nearest-city package includes a Voronoi generator that creates the
-data used for efficient reverse geocoding. This utility downloads city
-data from GeoNames, processes it through PostGIS to compute Voronoi polygons,
-and exports the results as compressed WKB files that are bundled with the
-package.
-
-### Data Generation
-
-The generator is containerized and can be run using Docker Compose:
+Or locally (requires a running PostgreSQL instance with PostGIS and loaded data):
 
 ```bash
-docker compose run --rm voronoi-generator
+PGNEAREST_DB_USER=myuser PGNEAREST_DB_NAME=postgres uv run pytest tests/ -v
 ```
 
-This process:
+## Data Pipeline
 
-- Downloads city data from GeoNames (cities with population > 1000)
-- Processes the data through PostGIS spatial functions
-- Generates two output files in pg_nearest_city/data/:
-  - `cities_1000_simple.txt.gz` - Simplified city data
-  - `voronois.wkb.gz` - Compressed WKB representation of Voronoi polygons
+The `pgnearest-load` CLI command runs a multi-step pipeline that downloads source
+data, imports it into PostGIS, applies corrections, simplifies geometry, and
+exports compressed CSV files for distribution.
 
-### Configuration
+### Running the Pipeline
 
-The generator accepts the following configuration options:
+```bash
+# Using Natural Earth boundaries
+uv run pgnearest-load --boundary-source naturalearth \
+    --db-name postgres --db-user myuser --output-dir ./output
 
-- `--country` - Filter to a specific country code (e.g., IT)
-- `--no-compress` - Disable output compression
-- `--output-dir` - Custom output directory
+# Using GADM boundaries
+uv run pgnearest-load --boundary-source gadm \
+    --db-name postgres --db-user myuser --output-dir ./output
 
-### Updating Data
+# Full rebuild (drops all tables first)
+uv run pgnearest-load ... --clean
+```
 
-The pre-generated data files are bundled with the package,
-so manual regeneration is only necessary when:
+### Key Flags
 
-- New GeoNames data becomes available and you want to update
-- You need to filter for a specific geographic region
-- You need to customize the data processing pipeline
+| Flag | Description |
+|------|-------------|
+| `--boundary-source {gadm,naturalearth}` | Which boundary dataset to use |
+| `--compression {auto,gzip,bz2,xz,zstd}` | Compression for exported files (`auto` picks based on source) |
+| `--no-cache` | Download to temp directory, nothing persists after the run |
+| `--clean` | Drop all project tables before starting |
+| `--skip-steps` / `--only-steps` | Comma-separated step prefixes to skip or isolate |
+| `--list-steps` | Print all pipeline steps and exit |
+| `--country` | Filter to a specific country code (e.g. `IT`) |
+
+### Output Files
+
+The pipeline exports three compressed CSV files:
+
+- `country.csv.<ext>` — subdivided country polygons (alpha2, alpha3, name, WKB geometry).
+- `geocoding.csv.<ext>` — city-to-country mapping (city, country, lat, lon).
+- `cities_500_simple.txt.<ext>` — simplified city data.
+
+### When to Regenerate
+
+Manual regeneration is only necessary when:
+
+- New GeoNames data becomes available and you want to update.
+- Upstream boundary datasets have been corrected.
+- You need to filter for a specific geographic region.

@@ -1,23 +1,16 @@
 # Changelog
 
-## 1.0.0 (2025-06-17)
-
-### Feat
-
-- apply country filtering during import
-- add ability to skip downloading file if path is provided
-- replace subprocess/awk with csv
-- Added country table, renamed geo column
-- voronoi generator
-
-### Fix
-
-- reverted country_code column name change
-- added index on geocoding.country_code
+## 1.0.0 (2026-03-15)
 
 ### Refactor
 
-- fix ruff lint issues for voronoi generator
+- country lookups near borders now use st_covers against corrected polygons instead of voronoi tessellation
+- iso3166-1 used as definitive standard for country sovereignty
+- new data import pipeline supporting gadm and natural earth boundary sources
+- geoboundaries and overpass corrections for countries with inaccurate upstream geometry
+- automatic overlap resolution using geocoding city presence as a heuristic
+- declarative data corrections framework for spelling fixes and errata
+- datasets package with url configs, caching, and a persistent registry
 
 ## 0.2.1 (2025-02-17)
 
