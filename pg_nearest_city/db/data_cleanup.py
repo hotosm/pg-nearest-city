@@ -231,6 +231,9 @@ def format_predicate(predicate: PredicateData) -> sql.Composed:
 
 PC = _PredicateComparison
 PD = PredicateData
+
+# Fixes applied to the geocoding table after import.
+# These correct known errors in the upstream GeoNames dataset.
 ROWS_TO_CLEAN: list[RowData] = [
     RowData(
         comment=_Comment.SPELLING,
@@ -253,30 +256,14 @@ ROWS_TO_CLEAN: list[RowData] = [
         result_limit=1,
         val_is_query=False,
     ),
-    RowData(
-        comment=_Comment.COORDINATES,
-        col_name="geom",
-        col_val="""
-            ST_Difference(
-                geom,
-                (SELECT ST_Union(geom) FROM tmp_country_bounds_adm1)
-            )""",
-        dml=_DML.UPDATE,
-        predicate_cols=[
-            PD(
-                col_name="alpha2",
-                col_val="CN",
-                comparison=PC.EQUAL,
-            ),
-            PD(
-                col_name="geom",
-                comparison=PC.NOT_NULL,
-            ),
-        ],
-        tbl_name="country",
-        result_limit=1,
-        val_is_query=True,
-    ),
+]
+
+# Fixes applied during the data generation pipeline (data_generator.py) only.
+# These reference temporary tables that only exist during that pipeline run.
+#
+# PRE_COUNTRY_UPDATE_ROWS: run after ADM_0/ADM_1 are imported as temp tables,
+# but BEFORE country.geom is populated from tmp_country_bounds_adm0.
+PRE_COUNTRY_UPDATE_ROWS: list[RowData] = [
     RowData(
         comment=_Comment.ERRATUM,
         col_name="alpha3",
@@ -292,6 +279,165 @@ ROWS_TO_CLEAN: list[RowData] = [
         tbl_name="tmp_country_bounds_adm0",
         result_limit=1,
         val_is_query=False,
+    ),
+]
+
+# POST_COUNTRY_UPDATE_ROWS: run after country.geom is populated from
+# tmp_country_bounds_adm0.  tmp_country_bounds_adm1 still exists at this point.
+#
+# Two kinds of fix are applied here:
+#
+# 1. Populate missing geoms - territories that have no geometry in ADM_0 (or whose
+#    ADM_0 entry was empty) are filled from the ST_Union of their ADM_1 features.
+#    The predicate "geom IS NULL" means the update is a no-op if ADM_0 already
+#    provided a geometry, so these entries are safe to leave in place.
+#
+# 2. Subtract from parent country - some territories are legally/constitutionally
+#    part of another state whose ADM_0 polygon encompasses them.  ST_Difference
+#    removes the overlap so that point-in-polygon queries don't misattribute cities.
+#    Kosovo is handled separately in PRE_COUNTRY_UPDATE_ROWS (code rename only).
+POST_COUNTRY_UPDATE_ROWS: list[RowData] = [
+    # --- Populate missing geoms from ADM_1 ---
+    # China SARs - HKG and MAC have no geometry in ADM_0.
+    RowData(
+        comment=_Comment.MISSING,
+        col_name="geom",
+        col_val="(SELECT ST_Union(geom) FROM tmp_country_bounds_adm1 WHERE alpha3 = 'HKG')",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(col_name="alpha2", col_val="HK", comparison=PC.EQUAL),
+            PD(col_name="geom", comparison=PC.NULL),
+        ],
+        tbl_name="country",
+        result_limit=1,
+        val_is_query=True,
+    ),
+    RowData(
+        comment=_Comment.MISSING,
+        col_name="geom",
+        col_val="(SELECT ST_Union(geom) FROM tmp_country_bounds_adm1 WHERE alpha3 = 'MAC')",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(col_name="alpha2", col_val="MO", comparison=PC.EQUAL),
+            PD(col_name="geom", comparison=PC.NULL),
+        ],
+        tbl_name="country",
+        result_limit=1,
+        val_is_query=True,
+    ),
+    # Palestine - absent from ADM_0.
+    RowData(
+        comment=_Comment.MISSING,
+        col_name="geom",
+        col_val="(SELECT ST_Union(geom) FROM tmp_country_bounds_adm1 WHERE alpha3 = 'PSE')",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(col_name="alpha2", col_val="PS", comparison=PC.EQUAL),
+            PD(col_name="geom", comparison=PC.NULL),
+        ],
+        tbl_name="country",
+        result_limit=1,
+        val_is_query=True,
+    ),
+    # Danish self-governing territories - Greenland and Faroe Islands may be absent
+    # from ADM_0 or their geometry may be folded into Denmark's ADM_0 polygon.
+    RowData(
+        comment=_Comment.MISSING,
+        col_name="geom",
+        col_val="(SELECT ST_Union(geom) FROM tmp_country_bounds_adm1 WHERE alpha3 = 'GRL')",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(col_name="alpha2", col_val="GL", comparison=PC.EQUAL),
+            PD(col_name="geom", comparison=PC.NULL),
+        ],
+        tbl_name="country",
+        result_limit=1,
+        val_is_query=True,
+    ),
+    RowData(
+        comment=_Comment.MISSING,
+        col_name="geom",
+        col_val="(SELECT ST_Union(geom) FROM tmp_country_bounds_adm1 WHERE alpha3 = 'FRO')",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(col_name="alpha2", col_val="FO", comparison=PC.EQUAL),
+            PD(col_name="geom", comparison=PC.NULL),
+        ],
+        tbl_name="country",
+        result_limit=1,
+        val_is_query=True,
+    ),
+    # Åland Islands - autonomous region of Finland, absent from ADM_0.
+    RowData(
+        comment=_Comment.MISSING,
+        col_name="geom",
+        col_val="(SELECT ST_Union(geom) FROM tmp_country_bounds_adm1 WHERE alpha3 = 'ALA')",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(col_name="alpha2", col_val="AX", comparison=PC.EQUAL),
+            PD(col_name="geom", comparison=PC.NULL),
+        ],
+        tbl_name="country",
+        result_limit=1,
+        val_is_query=True,
+    ),
+    # --- Subtract self-governing territories from their parent country's polygon ---
+    # China: TWN (claimed), HKG and MAC (SARs) are all inside China's ADM_0 polygon.
+    RowData(
+        comment=_Comment.COORDINATES,
+        col_name="geom",
+        col_val="""
+            ST_Difference(
+                geom,
+                (SELECT ST_Union(geom) FROM tmp_country_bounds_adm1
+                 WHERE alpha3 IN ('TWN', 'HKG', 'MAC'))
+            )""",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(col_name="alpha2", col_val="CN", comparison=PC.EQUAL),
+            PD(col_name="geom", comparison=PC.NOT_NULL),
+        ],
+        tbl_name="country",
+        result_limit=1,
+        val_is_query=True,
+    ),
+    # Denmark: Greenland and Faroe Islands are self-governing within Denmark.
+    RowData(
+        comment=_Comment.COORDINATES,
+        col_name="geom",
+        col_val="""
+            ST_Difference(
+                geom,
+                (SELECT ST_Union(geom) FROM tmp_country_bounds_adm1
+                 WHERE alpha3 IN ('GRL', 'FRO'))
+            )""",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(col_name="alpha2", col_val="DK", comparison=PC.EQUAL),
+            PD(col_name="geom", comparison=PC.NOT_NULL),
+        ],
+        tbl_name="country",
+        result_limit=1,
+        val_is_query=True,
+    ),
+    # Finland: Åland Islands are autonomous within Finland.
+    RowData(
+        comment=_Comment.COORDINATES,
+        col_name="geom",
+        col_val="""
+            ST_Difference(
+                geom,
+                (SELECT ST_Union(geom) FROM tmp_country_bounds_adm1
+                 WHERE alpha3 = 'ALA')
+            )""",
+        dml=_DML.UPDATE,
+        predicate_cols=[
+            PD(col_name="alpha2", col_val="FI", comparison=PC.EQUAL),
+            PD(col_name="geom", comparison=PC.NOT_NULL),
+        ],
+        tbl_name="country",
+        result_limit=1,
+        val_is_query=True,
     ),
 ]
 

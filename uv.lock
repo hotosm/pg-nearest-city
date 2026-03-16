@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 
 [[package]]
@@ -110,6 +110,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/09/35/2495c4ac46b980e4c
 wheels = [
     { url = "https://files.pythonhosted.org/packages/02/cc/b7e31358aac6ed1ef2bb790a9746ac2c69bcb3c8588b41616914eb106eaf/exceptiongroup-1.2.2-py3-none-any.whl", hash = "sha256:3111b9d131c238bec2f8f516e123e14ba243563fb135d3fe885990585aa7795b", size = 16453, upload-time = "2024-07-12T22:25:58.476Z" },
 ]
+
+[[package]]
+name = "gdal"
+version = "3.10.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/f9/a9a9496c8dc558c4c16a0c53283501fe3098b26536d5f475d378c8ed3437/gdal-3.10.3.tar.gz", hash = "sha256:b5550650daeeae8e41091581d9aea7d75a9f15b0ebbeb8c96e37458fa02264cd", size = 838170, upload-time = "2025-04-07T09:57:20.729Z" }
 
 [[package]]
 name = "ghp-import"
@@ -504,6 +510,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "gdal" },
     { name = "psutil" },
     { name = "reverse-geocoder" },
 ]
@@ -524,6 +531,7 @@ requires-dist = [{ name = "psycopg", specifier = ">=3.1" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "gdal", specifier = "==3.10.3" },
     { name = "psutil", specifier = ">=6.1.1" },
     { name = "reverse-geocoder", specifier = ">=1.5.1" },
 ]

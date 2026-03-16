@@ -15,12 +15,12 @@
 #     along with pg-nearest-city.  If not, see <https:#www.gnu.org/licenses/>.
 #
 ARG PYTHON_IMG_TAG=3.10
-ARG UV_IMG_TAG=0.5.2
+ARG UV_IMG_TAG=0.10.9
 FROM ghcr.io/astral-sh/uv:${UV_IMG_TAG} AS uv
 
 
 # Includes all labels and timezone info to extend from
-FROM docker.io/python:${PYTHON_IMG_TAG}-slim-bookworm AS base
+FROM docker.io/python:${PYTHON_IMG_TAG}-slim-trixie AS base
 ARG COMMIT_REF
 ARG PYTHON_IMG_TAG
 ARG MAINTAINER=admin@hotosm.org
@@ -59,7 +59,7 @@ FROM base AS build-wheel
 COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /build
 COPY . .
-RUN uv build
+RUN uv build --wheel
 
 
 
@@ -129,6 +129,7 @@ RUN --mount=type=cache,target=/root/.cache <<EOT
     uv sync \
         --project /_lock \
         --locked \
+        --no-dev \
         --no-install-project \
         --group test \
         --group docs
@@ -140,6 +141,31 @@ RUN whl_file=$(find /build -name '*-py3-none-any.whl' -type f) \
     && uv pip install \
       --python=$UV_PROJECT_ENVIRONMENT --no-deps \
       "${whl_file}"
+CMD ["bash"]
+
+
+
+# Stage to for the data generation (including GDAL)
+FROM runtime AS dev
+USER root
+RUN apt-get update --quiet \
+    && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --quiet --no-install-recommends \
+        "build-essential" \
+        "gcc" \
+        "g++" \
+        "libgdal-dev" \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
+USER appuser
+COPY --from=uv /uv /usr/local/bin/uv
+COPY . /_lock/
+RUN --mount=type=cache,target=/root/.cache <<EOT
+    uv sync \
+        --project /_lock \
+        --locked \
+        --dev \
+EOT
 CMD ["bash"]
 
 

@@ -3,8 +3,16 @@
 
 # Allow files and directories
 !pg_nearest_city
+!pg_nearest_city/**
 !tests
+!tests/**
 !pyproject.toml
 !uv.lock
 !README.md
 !LICENSE.md
+
+# Exclude large local generator inputs/caches from image build context
+pg_nearest_city/scripts/data/**
+pg_nearest_city/scripts/cache/**
+pg_nearest_city/**/__pycache__/
+pg_nearest_city/**/*.pyc

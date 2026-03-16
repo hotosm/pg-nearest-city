@@ -26,3 +26,7 @@ site
 
 # Benchmarks
 benchmarks/*.json
+
+# Data
+pg_nearest_city/scripts/data
+pg_nearest_city/scripts/cache

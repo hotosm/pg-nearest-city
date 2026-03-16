@@ -1,1 +1,1 @@
-benchmarks/benchmark-results.md
+docs/benchmark-results.md

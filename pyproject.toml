@@ -44,6 +44,7 @@ docs = [
     "mkdocstrings-python>=1.13.0",
 ]
 dev = [
+    "gdal==3.10.3",
     "psutil>=6.1.1",
     "reverse-geocoder>=1.5.1",
 ]
@@ -55,8 +56,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["pg_nearest_city"]
 include = [
-    "pg_nearest_city/data/cities_1000_simple.txt",
-    "pg_nearest_city/data/voronois.wkb",
+    "pg_nearest_city/data/cities_500_simple.txt*",
+    "pg_nearest_city/data/country_boundaries.wkb*",
+    "pg_nearest_city/db/iso-3166-1.csv*",
+]
+exclude = [
+    "pg_nearest_city/scripts/data/**",
+    "pg_nearest_city/scripts/cache/**",
 ]
 
 [tool.ruff]

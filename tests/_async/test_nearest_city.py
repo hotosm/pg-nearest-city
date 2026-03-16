@@ -12,13 +12,17 @@ from pg_nearest_city import AsyncNearestCity, DbConfig, Location, geo_test_cases
 # async --> sync conversion to take place
 @pytest_asyncio.fixture()
 async def test_db(test_db_conn_string):
-    """Provide a clean database connection for each test."""
-    # Create a single connection for the test
+    """Provide a clean database connection for each test.
+
+    Drops the geocoding table and clears country boundaries so each test
+    starts from a known state.  The country metadata rows are left in place
+    since they come from the bundled ISO CSV and are idempotent.
+    """
     conn = await psycopg.AsyncConnection.connect(test_db_conn_string)
 
-    # Clean up any existing state
     async with conn.cursor() as cur:
-        await cur.execute("DROP TABLE IF EXISTS pg_nearest_city_geocoding;")
+        await cur.execute("DROP TABLE IF EXISTS geocoding CASCADE;")
+        await cur.execute("UPDATE country SET geom = NULL")
     await conn.commit()
 
     yield conn
@@ -53,12 +57,15 @@ async def test_db_conn_vars_from_env():
 
 
 async def test_full_initialization_query():
-    """Test completet database initialization and basic query through connect method."""
+    """Test complete database initialization and basic query through connect method."""
     async with AsyncNearestCity() as geocoder:
         location = await geocoder.query(40.7128, -74.0060)
 
     assert location is not None
     assert location.city == "New York City"
+    assert location.country == "US"
+    assert location.country_alpha3 == "USA"
+    assert location.country_name == "United States of America"
     assert isinstance(location, Location)
 
 
@@ -70,7 +77,7 @@ async def test_init_without_context_manager():
 
 
 async def test_check_initialization_fresh_database(test_db):
-    """Test initialization check on a fresh database with no tables."""
+    """Test initialization check on a database with no geocoding table."""
     geocoder = AsyncNearestCity(test_db)
 
     async with test_db.cursor() as cur:
@@ -87,9 +94,9 @@ async def test_check_initialization_incomplete_table(test_db):
     async with test_db.cursor() as cur:
         await cur.execute(
             """
-            CREATE TABLE pg_nearest_city_geocoding (
-                city varchar,
-                country varchar
+            CREATE TABLE geocoding (
+                city text,
+                country char(2)
             );
         """
         )
@@ -107,7 +114,7 @@ async def test_check_initialization_empty_table(test_db):
     geocoder = AsyncNearestCity(test_db)
 
     async with test_db.cursor() as cur:
-        await geocoder._create_geocoding_table(cur)
+        await geocoder._setup_tables(cur)
         await test_db.commit()
 
         status = await geocoder._check_initialization_status(cur)
@@ -118,12 +125,14 @@ async def test_check_initialization_empty_table(test_db):
     assert not status.has_data
 
 
-async def test_check_initialization_missing_voronoi(test_db):
-    """Test initialization check when Voronoi polygons are missing."""
+async def test_check_initialization_missing_country_boundaries(test_db):
+    """Test initialization check when country boundary geometries are missing."""
     geocoder = AsyncNearestCity(test_db)
 
     async with test_db.cursor() as cur:
-        await geocoder._create_geocoding_table(cur)
+        await geocoder._setup_extensions(cur)
+        await geocoder._setup_tables(cur)
+        await geocoder._import_country_metadata(cur)
         await geocoder._import_cities(cur)
         await test_db.commit()
 
@@ -131,7 +140,7 @@ async def test_check_initialization_missing_voronoi(test_db):
 
     assert not status.is_fully_initialized
     assert status.has_data
-    assert not status.has_complete_voronoi
+    assert not status.has_country_boundaries
 
 
 async def test_check_initialization_missing_index(test_db):
@@ -139,16 +148,18 @@ async def test_check_initialization_missing_index(test_db):
     geocoder = AsyncNearestCity(test_db)
 
     async with test_db.cursor() as cur:
-        await geocoder._create_geocoding_table(cur)
+        await geocoder._setup_extensions(cur)
+        await geocoder._setup_tables(cur)
+        await geocoder._import_country_metadata(cur)
+        await geocoder._import_country_boundaries(cur)
         await geocoder._import_cities(cur)
-        await geocoder._import_voronoi_polygons(cur)
         await test_db.commit()
 
         status = await geocoder._check_initialization_status(cur)
 
     assert not status.is_fully_initialized
     assert status.has_data
-    assert status.has_complete_voronoi
+    assert status.has_country_boundaries
     assert not status.has_spatial_index
 
 
@@ -162,7 +173,7 @@ async def test_check_initialization_complete(test_db):
 
     assert status.is_fully_initialized
     assert status.has_spatial_index
-    assert status.has_complete_voronoi
+    assert status.has_country_boundaries
     assert status.has_data
 
 
@@ -199,3 +210,10 @@ async def test_cities_close_country_boundaries(case):
         assert isinstance(location, Location)
         assert location.city == case.expected_city
         assert location.country == case.expected_country
+
+
+async def test_offshore_border_point_returns_none():
+    """Point near Sint Maarten coast should return no country/city if outside all borders."""
+    async with AsyncNearestCity() as geocoder:
+        location = await geocoder.query(lon=-63.11852, lat=18.03783)
+        assert location is None

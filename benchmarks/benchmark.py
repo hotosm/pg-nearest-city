@@ -1,4 +1,4 @@
-"""Benchmark k-tree vs our voronoi geocoding approaches."""
+"""Benchmark KD-tree vs pg-nearest-city geocoding approaches."""
 
 from typing import List, Tuple
 import asyncio
@@ -12,13 +12,13 @@ from pg_nearest_city import AsyncNearestCity
 from pg_nearest_city.base_nearest_city import Location
 
 
-async def benchmark_voronoi(
+async def benchmark_pgnearestcity(
     test_points: List[Tuple[float, float]],
     warmup_runs: int = 5,
     num_test_runs: int = 1000,
 ) -> Tuple[List[Location], BenchmarkSession]:
-    """Run benchmark for Voronoi implementation."""
-    session = BenchmarkSession("voronoi_geocoding", num_test_runs)
+    """Run benchmark for pg-nearest-city implementation."""
+    session = BenchmarkSession("pgnearest_geocoding", num_test_runs)
     results = []
 
     # Initial memory snapshot
@@ -113,9 +113,9 @@ async def main():
         results = benchmark_kdtree(test_points)
         queue.put(results)
 
-    def voronoi_process(queue):
-        """Process voronoi benchmarks in separate system process."""
-        results = asyncio.run(benchmark_voronoi(test_points))
+    def pgnearestcity_process(queue):
+        """Process pg-nearest-city benchmark in separate system process."""
+        results = asyncio.run(benchmark_pgnearestcity(test_points))
         queue.put(results)
 
     # NOTE we run both benchmarks in separate processes
@@ -124,29 +124,29 @@ async def main():
     kdtree_p = Process(target=kdtree_process, args=(kdtree_queue,))
     kdtree_p.start()
 
-    voronoi_queue = Queue()
-    voronoi_p = Process(target=voronoi_process, args=(voronoi_queue,))
-    voronoi_p.start()
+    pgnearest_queue = Queue()
+    pgnearest_p = Process(target=pgnearestcity_process, args=(pgnearest_queue,))
+    pgnearest_p.start()
 
     kdtree_p.join()
-    voronoi_p.join()
+    pgnearest_p.join()
 
     # Get results
     (_kdtree_results, kdtree_session) = kdtree_queue.get()
-    (_voronoi_results, voronoi_session) = voronoi_queue.get()
+    (_pgnearest_results, pgnearest_session) = pgnearest_queue.get()
 
     kdtree_session.print_summary()
-    voronoi_session.print_summary()
+    pgnearest_session.print_summary()
 
     # Output to JSON
     kdtree_session.to_json()
-    voronoi_session.to_json()
+    pgnearest_session.to_json()
 
     # Output to final markdown
     # FIXME markdown file generated not fully automated yet
     # benchmark_file = "benchmarks/benchmark-results.md"
     # kdtree_session.append_to_markdown(file_path=str(benchmark_file))
-    # voronoi_session.append_to_markdown(file_path=str(benchmark_file))
+    # pgnearest_session.append_to_markdown(file_path=str(benchmark_file))
 
 
 if __name__ == "__main__":

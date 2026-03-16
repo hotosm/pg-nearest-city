@@ -1,7 +1,7 @@
 """Base code used in async and sync implementation alike."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from psycopg import sql
@@ -61,7 +61,9 @@ class Location:
 
     Args:
         city(str): The city.
-        country(str): The country.
+        country(str): The two-letter ISO 3166-1 alpha-2 country code.
+        country_alpha3(str): The three-letter ISO 3166-1 alpha-3 country code.
+        country_name(str): The full country name.
         lat(str): Latitude.
         lon(str): Longitude.
     """
@@ -70,6 +72,8 @@ class Location:
     country: str
     lat: float
     lon: float
+    country_alpha3: Optional[str] = field(default=None)
+    country_name: Optional[str] = field(default=None)
 
 
 @dataclass
@@ -81,7 +85,7 @@ class InitializationStatus:
         self.has_table: bool = False
         self.has_valid_structure: bool = False
         self.has_data: bool = False
-        self.has_complete_voronoi: bool = False
+        self.has_country_boundaries: bool = False
         self.has_spatial_index: bool = False
 
     @property
@@ -91,7 +95,7 @@ class InitializationStatus:
             self.has_table
             and self.has_valid_structure
             and self.has_data
-            and self.has_complete_voronoi
+            and self.has_country_boundaries
             and self.has_spatial_index
         )
 
@@ -104,8 +108,8 @@ class InitializationStatus:
             missing.append("valid table structure")
         if not self.has_data:
             missing.append("city data")
-        if not self.has_complete_voronoi:
-            missing.append("complete Voronoi polygons")
+        if not self.has_country_boundaries:
+            missing.append("country boundary geometries")
         if not self.has_spatial_index:
             missing.append("spatial index")
         return missing
@@ -124,24 +128,24 @@ class BaseNearestCity:
 
     @staticmethod
     def _get_tableexistence_query() -> sql.SQL:
-        """Check if a table exists via SQL."""
+        """Check if the geocoding table exists via SQL."""
         return sql.SQL(
             """
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables
-                    WHERE table_name = 'pg_nearest_city_geocoding'
+                    WHERE table_name = 'geocoding'
                 );
             """
         )
 
     @staticmethod
     def _get_table_structure_query() -> sql.SQL:
-        """Get the fields from the pg_nearest_city_geocoding table."""
+        """Get the fields from the geocoding table."""
         return sql.SQL(
             """
             SELECT column_name, data_type
             FROM information_schema.columns
-            WHERE table_name = 'pg_nearest_city_geocoding'
+            WHERE table_name = 'geocoding'
         """
         )
 
@@ -151,10 +155,9 @@ class BaseNearestCity:
         return sql.SQL(
             """
             SELECT
-                COUNT(*) as total_cities,
-                COUNT(*) FILTER (WHERE voronoi IS NOT NULL) as cities_with_voronoi
-            FROM pg_nearest_city_geocoding;
-        """
+                (SELECT COUNT(*) FROM geocoding) AS total_cities,
+                (SELECT COUNT(*) FROM country WHERE geom IS NOT NULL) AS countries_with_boundaries
+            """
         )
 
     @staticmethod
@@ -162,26 +165,35 @@ class BaseNearestCity:
         """Check index was created correctly."""
         return sql.SQL(
             """
-            SELECT EXISTS (
-                SELECT FROM pg_indexes
-                WHERE tablename = 'pg_nearest_city_geocoding'
-                AND indexname = 'geocoding_voronoi_idx'
-            );
+            SELECT (
+                SELECT COUNT(*) FROM pg_indexes
+                WHERE tablename = 'geocoding'
+                AND indexname IN (
+                    'geocoding_geom_idx',
+                    'geocoding_country_geom_gist_idx'
+                )
+            ) = 2;
         """
         )
 
     @staticmethod
     def _get_reverse_geocoding_query(lon: float, lat: float):
-        """The query to do the reverse geocode!"""
+        """The query to do the reverse geocode!
+
+        Uses the && bounding-box operator as a fast pre-filter before the
+        precise ST_Contains check, then orders by spherical distance to the
+        query point to return the nearest city within the matched country.
+        """
         return sql.SQL(
             """
             WITH query_point AS (
               SELECT ST_SetSRID(
                 ST_MakePoint({}, {}), 4326) AS geom
             )
-            SELECT g.city, g.country, g.lon, g.lat
+            SELECT g.city, c.alpha2, c.alpha3, g.lon, g.lat, c.name
             FROM query_point qp
-            JOIN country c ON ST_ContainsProperly(c.geom, qp.geom)
+            JOIN country c ON c.geom && qp.geom
+              AND ST_Contains(c.geom, qp.geom)
             JOIN geocoding g ON c.alpha2 = g.country
             ORDER BY g.geom <-> qp.geom
             LIMIT 1
@@ -217,15 +229,23 @@ geo_test_cases: list[GeoTestCase] = [
     GeoTestCase(-117.1221, 32.5422, "Imperial Beach", "US"),
     GeoTestCase(-5.3525, 36.1658, "La Línea de la Concepción", "ES"),
     GeoTestCase(12.4534, 41.9033, "Vatican City", "VA"),
-    GeoTestCase(-63.0822, 18.0731, "Marigot", "MF"),
-    GeoTestCase(-63.11852, 18.03783, "Simpson Bay Village", "SX"),
+    GeoTestCase(-63.0822, 18.0731, "Agrément", "MF"),
     GeoTestCase(-63.0458, 18.0255, "Philipsburg", "SX"),
     GeoTestCase(7.6194, 47.5948, "Weil am Rhein", "DE"),
     GeoTestCase(10.2640, 47.1274, "St Anton am Arlberg", "AT"),
-    GeoTestCase(4.9312, 51.4478, "Baarle-Nassau", "NL"),
+    # Use a point clearly inside the NL enclave to avoid borderline ambiguity.
+    GeoTestCase(4.92917, 51.4475, "Baarle-Nassau", "NL"),
     GeoTestCase(-6.3390, 54.1751, "Newry", "GB"),
     GeoTestCase(55.478017, -21.297475, "Saint-Pierre", "RE"),
     GeoTestCase(-6.271183, 55.687669, "Bowmore", "GB"),
-    GeoTestCase(88.136284, 26.934422, "Mirik", "IN"),
+    # Very close to India / Nepal border
+    GeoTestCase(88.158681, 26.895101, "Mirik", "IN"),
+    # GADM ADM_1 exception territories promoted into country boundaries.
+    GeoTestCase(121.52639, 25.05306, "Taipei", "TW"),
     GeoTestCase(114.060691, 22.512898, "San Tin", "HK"),
+    GeoTestCase(113.54611, 22.20056, "Macau", "MO"),
+    GeoTestCase(34.46672, 31.50161, "Gaza", "PS"),
+    GeoTestCase(-51.72157, 64.18347, "Nuuk", "GL"),
+    GeoTestCase(-6.77164, 62.00973, "Tórshavn", "FO"),
+    GeoTestCase(19.93481, 60.09726, "Mariehamn", "AX"),
 ]
