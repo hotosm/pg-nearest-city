@@ -7,22 +7,29 @@ py-compile
 NEWS
 *__pycache__/
 
-# output files
+# Miscellaneous
+.DS_Store
+
+# input files
 *.dbf
 *.fgb
 *.geojson
 *.gpkg
-*.html
-*.log
 *.osm
 *.pbf
 *.prj
 *.shp
 *.shx
+
+# output files
+*.bz2
+*.html
+*.log
 *.txt
 *.xml
-*.xml
+*.xz
 *.zip
+*.zst
 
 # GADM
 gadm*/
@@ -36,5 +43,5 @@ dist
 site
 .cache
 
-# Benchmarks
-benchmarks/*.json
+# Allow package outputs
+!pg_nearest_city/data/*.xz
