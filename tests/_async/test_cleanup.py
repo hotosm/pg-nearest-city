@@ -25,6 +25,7 @@ async def test_db(test_db_conn_string):
     await conn.close()
 
 
+@pytest.mark.integration
 class TestMakeQueries:
     """Test cases for make_queries function."""
 

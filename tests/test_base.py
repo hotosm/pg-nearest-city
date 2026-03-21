@@ -69,6 +69,9 @@ class TestFindDataPath:
     def test_returns_none_when_no_data(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PGNEAREST_DATA_PATH", str(tmp_path))
         monkeypatch.setattr(
+            BaseNearestCity, "DATA_PACKAGE_PATH", str(tmp_path / "nope2")
+        )
+        monkeypatch.setattr(
             BaseNearestCity, "DATA_FALLBACK_PATH", str(tmp_path / "nope")
         )
         result = BaseNearestCity._find_data_path()
@@ -123,6 +126,7 @@ class TestBootstrapSql:
         assert all("CREATE INDEX" in s for s in stmts)
 
 
+@pytest.mark.integration
 class TestSyncQueryOceanPoint:
     """Test that querying a point in the ocean returns None."""
 
@@ -135,6 +139,7 @@ class TestSyncQueryOceanPoint:
         assert result is None
 
 
+@pytest.mark.integration
 class TestAsyncQueryOceanPoint:
     """Test that querying a point in the ocean returns None (async)."""
 

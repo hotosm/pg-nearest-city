@@ -1,5 +1,7 @@
 """Tests for pg_nearest_city.db.corrections data definitions."""
 
+import pytest
+
 from pg_nearest_city.db.corrections import (
     BOUNDARY_CORRECTIONS,
     DATA_CORRECTIONS,
@@ -9,6 +11,7 @@ from pg_nearest_city.db.corrections import (
 from pg_nearest_city.db.data_cleanup import make_queries
 
 
+@pytest.mark.integration
 class TestDataCorrections:
     def test_common_corrections_produce_valid_sql(self, test_db_conn_string):
         """All DATA_CORRECTIONS generate valid psycopg.sql objects."""

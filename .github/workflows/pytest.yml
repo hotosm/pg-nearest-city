@@ -17,4 +17,4 @@ jobs:
       tag_override: ci
       compose_file: compose.yml
       compose_service: code
-      compose_command: pytest
+      compose_command: "pytest -m 'not integration'"

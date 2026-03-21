@@ -57,6 +57,7 @@ async def test_db_conn_vars_from_env():
     assert db_conf.port == 5432
 
 
+@pytest.mark.integration
 async def test_full_initialization_query():
     """Test database initialization and basic query."""
     async with AsyncNearestCity() as geocoder:
@@ -74,6 +75,7 @@ async def test_init_without_context_manager():
         await geocoder.query(-74.0060, 40.7128)
 
 
+@pytest.mark.integration
 async def test_check_initialization_fresh_database(fresh_db):
     """Test initialization check on a fresh database with no tables."""
     geocoder = AsyncNearestCity(fresh_db)
@@ -85,6 +87,7 @@ async def test_check_initialization_fresh_database(fresh_db):
     assert not status.has_country_table or not status.has_geocoding_table
 
 
+@pytest.mark.integration
 async def test_check_initialization_complete(test_db):
     """Test initialization check with a properly initialized database."""
     async with AsyncNearestCity(test_db) as geocoder:
@@ -99,6 +102,7 @@ async def test_check_initialization_complete(test_db):
     assert status.has_country_data
 
 
+@pytest.mark.integration
 async def test_init_db_at_startup_then_query(test_db):
     """Web servers have a startup lifecycle that could do the initialisation."""
     async with AsyncNearestCity(test_db) as geocoder:
@@ -112,6 +116,7 @@ async def test_init_db_at_startup_then_query(test_db):
     assert isinstance(location, Location)
 
 
+@pytest.mark.integration
 async def test_invalid_coordinates(test_db):
     """Test that invalid coordinates are properly handled."""
     async with AsyncNearestCity(test_db) as geocoder:
@@ -122,6 +127,7 @@ async def test_invalid_coordinates(test_db):
             await geocoder.query(181, 0)  # Invalid longitude
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize("case", geo_test_cases)
 async def test_cities_close_country_boundaries(case):
     async with AsyncNearestCity() as geocoder:

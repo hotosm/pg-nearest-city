@@ -288,29 +288,21 @@ class DataLoader:
     def _resolve_compression(self) -> CompressionAlgorithm:
         """Resolve AUTO compression to a concrete algorithm.
 
-        AUTO selection is based on benchmark data (see COMPRESSION.md):
-          - GADM (80 MB): zstd for speed (3.38x in 0.11s vs xz 5.14x in 64s).
-          - NaturalEarth (22 MB): xz for ratio (3.72x in 14s); data is small
-            enough that the time penalty is acceptable.
-        Falls back through the availability chain if the preferred compressor
-        is unavailable.
+        AUTO always prefers xz for best compression ratio. The export step
+        runs infrequently, so the speed tradeoff is acceptable. Falls back
+        through the availability chain if lzma is unavailable.
         """
-        from pg_nearest_city.utils import _HAS_BZ2, _HAS_LZMA, _HAS_ZSTD_CLI, _zstd_open
+        from pg_nearest_city.utils import _HAS_BZ2, _HAS_LZMA
 
         algo = self.config.compression
         if algo != CompressionAlgorithm.AUTO:
             return algo
 
-        if self.config.boundary_source == BoundarySource.GADM:
-            if _zstd_open is not None or _HAS_ZSTD_CLI:
-                return CompressionAlgorithm.ZSTD
-            return CompressionAlgorithm.GZIP
-        else:
-            if _HAS_LZMA:
-                return CompressionAlgorithm.XZ
-            if _HAS_BZ2:
-                return CompressionAlgorithm.BZ2
-            return CompressionAlgorithm.GZIP
+        if _HAS_LZMA:
+            return CompressionAlgorithm.XZ
+        if _HAS_BZ2:
+            return CompressionAlgorithm.BZ2
+        return CompressionAlgorithm.GZIP
 
     def _export_data(self) -> None:
         """Export country and geocoding tables as compressed CSV files.

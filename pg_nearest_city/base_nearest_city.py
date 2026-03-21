@@ -129,6 +129,7 @@ class BaseNearestCity:
 
     # Default data directory locations for auto-import
     DATA_ENV_VAR = "PGNEAREST_DATA_PATH"
+    DATA_PACKAGE_PATH = str(Path(__file__).parent / "data")
     DATA_FALLBACK_PATH = "/data/pg_nearest_city"
 
     # COPY statements for importing data
@@ -256,6 +257,7 @@ class BaseNearestCity:
         env_path = os.getenv(BaseNearestCity.DATA_ENV_VAR)
         if env_path:
             candidates.append(env_path)
+        candidates.append(BaseNearestCity.DATA_PACKAGE_PATH)
         candidates.append(BaseNearestCity.DATA_FALLBACK_PATH)
 
         for path_str in candidates:
