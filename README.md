@@ -88,7 +88,8 @@ The pg-nearest-city approach:
 
 ### How This Package Works
 
-- Ingest [GeoNames](https://www.geonames.org/) cities500 data (cities with population > 500).
+- Ingest [GeoNames](https://www.geonames.org/) cities500 data
+  (cities with population > 500).
 - Ingest country boundary polygons from either [GADM](https://gadm.org/) or
   [Natural Earth](https://www.naturalearthdata.com/).
 - Apply [GeoBoundaries](https://www.geoboundaries.org/) corrections for
@@ -227,15 +228,15 @@ uv run pgnearest-load ... --clean
 
 ### Key Flags
 
-| Flag | Description |
-|------|-------------|
-| `--boundary-source {gadm,naturalearth}` | Which boundary dataset to use |
-| `--compression {auto,gzip,bz2,xz,zstd}` | Compression for exported files (`auto` picks based on source) |
-| `--no-cache` | Download to temp directory, nothing persists after the run |
-| `--clean` | Drop all project tables before starting |
-| `--skip-steps` / `--only-steps` | Comma-separated step prefixes to skip or isolate |
-| `--list-steps` | Print all pipeline steps and exit |
-| `--country` | Filter to a specific country code (e.g. `IT`) |
+| Flag                                    | Description                      |
+| --------------------------------------- | -------------------------------- |
+| `--boundary-source {gadm,naturalearth}` | Which boundary dataset to use    |
+| `--compression {auto,gzip,bz2,xz,zstd}` | Compression for exported files   |
+| `--no-cache`                            | Download to temp dir, no persist |
+| `--clean`                               | Drop all project tables first    |
+| `--skip-steps` / `--only-steps`         | Step prefixes to skip or isolate |
+| `--list-steps`                          | Print pipeline steps and exit    |
+| `--country`                             | Filter to a country (e.g. `IT`)  |
 
 ### Output Files
 

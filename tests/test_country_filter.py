@@ -8,7 +8,6 @@ import pytest
 from pg_nearest_city import DbConfig, Location, NearestCity
 from pg_nearest_city.base_nearest_city import geo_test_cases
 from pg_nearest_city.datasets.sources import (
-    ENCLAVE_DEPENDENCIES,
     get_required_countries,
 )
 from pg_nearest_city.db.queries import create_database, drop_database
