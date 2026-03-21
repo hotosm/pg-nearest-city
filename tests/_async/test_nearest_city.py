@@ -129,7 +129,9 @@ async def test_invalid_coordinates(test_db):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("case", geo_test_cases)
-async def test_cities_close_country_boundaries(case):
+async def test_cities_close_country_boundaries(case, loaded_countries):
+    if loaded_countries is not None and case.expected_country not in loaded_countries:
+        pytest.skip(f"{case.expected_country} not loaded")
     async with AsyncNearestCity() as geocoder:
         location = await geocoder.query(lon=case.lon, lat=case.lat)
         assert isinstance(location, Location)

@@ -87,7 +87,7 @@ class Config:
 
     # Processing options
     boundary_source: BoundarySource = BoundarySource.GADM
-    country_filter: str | None = None  # Optional filter for testing (e.g., "IT")
+    country_filter: str | None = None  # Alpha-2 code from CLI (e.g., "IT")
 
     # Temporary table names
     tmp_tables: list[str] = field(default_factory=list)
@@ -98,6 +98,43 @@ class Config:
 
     def __post_init__(self):
         self.db_conn_str = self.db_conn_settings.conn_string
+
+        # Resolve country filter: alpha-2 → alpha-3 set with enclave deps
+        self.country_filter_alpha3: set[str] | None = None
+        self.country_filter_alpha2: set[str] | None = None
+        if self.country_filter:
+            a2_to_a3, a3_to_a2 = self._load_iso_mapping()
+            target_a3 = a2_to_a3.get(self.country_filter.upper())
+            if not target_a3:
+                raise ValueError(
+                    f"Unknown country code: {self.country_filter!r}. "
+                    "Use an ISO 3166-1 alpha-2 code (e.g. IT, FR, NL)."
+                )
+            from pg_nearest_city.datasets.sources import get_required_countries
+
+            required_a3 = get_required_countries(target_a3)
+            self.country_filter_alpha3 = required_a3
+            self.country_filter_alpha2 = {
+                a3_to_a2[a3] for a3 in required_a3 if a3 in a3_to_a2
+            }
+
+    def _load_iso_mapping(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Load alpha-2 ↔ alpha-3 mapping from bundled ISO 3166-1 CSV."""
+        a2_to_a3: dict[str, str] = {}
+        a3_to_a2: dict[str, str] = {}
+        with gzip.open(self.iso3166_path, "rt") as f:
+            for line in f:
+                parts = line.strip().split(",", 3)
+                if len(parts) < 2:
+                    continue
+                a2, a3 = parts[0], parts[1]
+                # Skip header or malformed rows: alpha-2 must be exactly
+                # 2 uppercase ASCII letters
+                if len(a2) != 2 or not a2.isalpha() or not a2.isupper():
+                    continue
+                a2_to_a3[a2] = a3
+                a3_to_a2[a3] = a2
+        return a2_to_a3, a3_to_a2
 
 
 @dataclass
@@ -505,28 +542,25 @@ class DataLoader:
             self.logger.error(f"Clean data file not found: {clean_file}")
             raise FileNotFoundError(f"Clean data file not found: {clean_file}")
 
-        copy_stmt = [
+        copy_stmt = (
             "COPY geocoding(city, country, lat, lon) FROM STDIN DELIMITER E'\\t'"
-        ]
+        )
+        alpha2_filter = self.config.country_filter_alpha2
         with conn.cursor() as cur:
-            # Apply country filter if specified
-            if self.config.country_filter:
-                self.logger.info(f"Filtering for country: {self.config.country_filter}")
-                copy_stmt.append("WHERE country = %s")
+            if alpha2_filter:
+                self.logger.info(
+                    f"Filtering GeoNames for countries: {sorted(alpha2_filter)}"
+                )
             try:
-                # Use COPY for efficient import
                 with open(clean_file, "r") as f:
-                    if self.config.country_filter:
-                        with cur.copy(
-                            " ".join(copy_stmt),
-                            (self.config.country_filter,),
-                        ) as copy:
-                            for line in f:
-                                copy.write(line)
-                    else:
-                        with cur.copy(" ".join(copy_stmt)) as copy:
-                            for line in f:
-                                copy.write(line)
+                    with cur.copy(copy_stmt) as copy:
+                        for line in f:
+                            if alpha2_filter:
+                                # TSV: city\tcountry\tlat\tlon
+                                parts = line.split("\t", 3)
+                                if len(parts) < 2 or parts[1] not in alpha2_filter:
+                                    continue
+                            copy.write(line)
                 # Log record count
                 cur.execute("SELECT COUNT(*) as count FROM geocoding")
                 result = cur.fetchone()
@@ -646,7 +680,7 @@ class DataLoader:
             file_layer=adm0_layer,
             alpha3_column=adm0_cfg.alpha3_column,
             adm0_name_column=adm0_cfg.adm0_name_column,
-            country_filter=self.config.country_filter,
+            country_filter=self.config.country_filter_alpha3,
             exclude_alpha3=exclude,
         )
         sql_adm1 = queries.select_adm1(
@@ -936,7 +970,7 @@ class DataLoader:
             with conn.cursor() as cur:
                 self.logger.info("Updating country boundaries")
                 cur.execute(queries.UPDATE_COUNTRY_INIT_GEOM_ADM0)
-                if not self.config.country_filter:
+                if not self.config.country_filter_alpha3:
                     if self.config.boundary_source == BoundarySource.GADM:
                         cur.execute(queries.INSERT_COUNTRY_INIT_GEOM_ADM1_GADM)
                     else:

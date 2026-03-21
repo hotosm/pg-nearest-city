@@ -6,6 +6,25 @@ import pytest
 from pg_nearest_city import DbConfig
 
 
+@pytest.fixture(scope="session")
+def loaded_countries():
+    """Query which countries are loaded in the DB.
+
+    Returns None if the DB is unavailable, meaning no tests should be
+    skipped. Returns a set of alpha2 codes if the DB is reachable, so
+    tests for unloaded countries can be skipped (e.g. single-country loads).
+    """
+    try:
+        conn = psycopg.Connection.connect(DbConfig().get_connection_string())
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT alpha2 FROM country")
+            countries = {row[0] for row in cur.fetchall()}
+        conn.close()
+        return countries
+    except Exception:
+        return None
+
+
 @pytest.fixture()
 def test_db_conn_string():
     """Get the database connection string for the test db."""

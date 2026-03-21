@@ -10,6 +10,26 @@ if TYPE_CHECKING:
     from pg_nearest_city.datasets.sources import PromotedTerritory
 
 
+def create_database(db_name: str) -> sql.Composed:
+    """CREATEs a database."""
+    parts = [
+        sql.SQL("CREATE DATABASE "),
+        sql.Identifier(db_name),
+    ]
+
+    return sql.Composed(parts)
+
+
+def drop_database(db_name: str) -> sql.Composed:
+    """DROPs a database."""
+    parts = [
+        sql.SQL("DROP DATABASE IF EXISTS "),
+        sql.Identifier(db_name),
+    ]
+
+    return sql.Composed(parts)
+
+
 def drop_table(table_name: str) -> sql.Composed:
     """DROPs a table."""
     parts = [
@@ -369,7 +389,7 @@ def select_adm0(
     file_layer: str,
     alpha3_column: str,
     adm0_name_column: str,
-    country_filter: str | None = None,
+    country_filter: set[str] | None = None,
     exclude_alpha3: list[str] | None = None,
 ) -> str:
     """Query for ADM0 (country-level) boundaries."""
@@ -388,8 +408,10 @@ def select_adm0(
             sql.Composed(
                 [
                     sql.Identifier(alpha3_column),
-                    sql.SQL(" = "),
-                    sql.Literal(country_filter),
+                    sql.SQL(" IN "),
+                    sql.SQL("(")
+                    + sql.SQL(", ").join(sql.Literal(v) for v in sorted(country_filter))
+                    + sql.SQL(")"),
                 ]
             )
         )

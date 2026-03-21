@@ -35,7 +35,11 @@ def parse_args():
     parser.add_argument(
         "--cache-dir", default="/data/cache", help="Directory to cache downloaded files"
     )
-    parser.add_argument("--country", help="Filter to specific country code (e.g. IT)")
+    parser.add_argument(
+        "--country",
+        help="Filter to specific ISO 3166-1 alpha-2 country code (e.g. IT). "
+        "Enclave dependencies are loaded automatically.",
+    )
     parser.add_argument(
         "--boundary-source",
         choices=[s.value for s in BoundarySource],

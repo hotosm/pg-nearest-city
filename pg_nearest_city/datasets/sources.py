@@ -182,6 +182,47 @@ NE_PROMOTED_TERRITORIES: list[PromotedTerritory] = [
 ]
 
 # ---------------------------------------------------------------------------
+# Enclave dependencies
+# When loading a single country, these additional countries must also be
+# loaded so that RESOLVE_COUNTRY_OVERLAPS can correctly subtract enclave
+# geometries.  Keys and values are ISO 3166-1 alpha-3 codes.
+# The resolver walks the graph transitively (e.g. CHE → ITA → VAT, SMR).
+# ---------------------------------------------------------------------------
+ENCLAVE_DEPENDENCIES: dict[str, list[str]] = {
+    "ITA": ["VAT", "SMR"],
+    "FRA": ["MCO"],
+    "ZAF": ["LSO", "SWZ"],
+    "NLD": ["BEL"],
+    "BEL": ["NLD"],
+    "CHE": ["ITA", "DEU"],  # Campione d'Italia, Büsingen am Hochrhein
+    "ESP": ["GIB", "AND"],
+}
+
+
+def get_required_countries(target: str) -> set[str]:
+    """Find all countries needed for correct boundary resolution.
+
+    Walks ENCLAVE_DEPENDENCIES transitively so that nested enclaves
+    (e.g. CHE → ITA → VAT, SMR) are included.
+
+    Args:
+        target: ISO 3166-1 alpha-3 code of the requested country.
+
+    Returns:
+        Set of alpha-3 codes including the target and all dependencies.
+    """
+    required: set[str] = set()
+    stack = [target]
+    while stack:
+        country = stack.pop()
+        if country in required:
+            continue
+        required.add(country)
+        stack.extend(ENCLAVE_DEPENDENCIES.get(country, []))
+    return required
+
+
+# ---------------------------------------------------------------------------
 # Overpass
 # Used as a fallback boundary source for territories absent from both
 # Natural Earth and GeoBoundaries.

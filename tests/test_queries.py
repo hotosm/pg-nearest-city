@@ -31,10 +31,23 @@ class TestSelectAdm0:
             file_layer="countries",
             alpha3_column="ADM0_A3",
             adm0_name_column="NAME",
-            country_filter="ITA",
+            country_filter={"ITA"},
         )
         assert "WHERE" in sql
         assert "'ITA'" in sql
+
+    def test_with_multi_country_filter(self):
+        sql = queries.select_adm0(
+            file_layer="countries",
+            alpha3_column="ADM0_A3",
+            adm0_name_column="NAME",
+            country_filter={"ITA", "VAT", "SMR"},
+        )
+        assert "WHERE" in sql
+        assert "IN" in sql
+        assert "'ITA'" in sql
+        assert "'VAT'" in sql
+        assert "'SMR'" in sql
 
     def test_with_exclusion(self):
         sql = queries.select_adm0(
@@ -52,7 +65,7 @@ class TestSelectAdm0:
             file_layer="countries",
             alpha3_column="ADM0_A3",
             adm0_name_column="NAME",
-            country_filter="FRA",
+            country_filter={"FRA"},
             exclude_alpha3=["XCA"],
         )
         assert "WHERE" in sql
