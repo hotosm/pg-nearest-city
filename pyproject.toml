@@ -37,7 +37,6 @@ pgnearest-load = "pg_nearest_city.scripts.load_database:main"
 test = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.3",
-    "pytest-cov>=7.0.0",
 ]
 docs = [
     "mkdocs>=1.6.1",
@@ -67,8 +66,8 @@ exclude = [
     ".ruff_cache",
     "pg_nearest_city/__version__.py",
     # Generated files
-    "pg_nearest_city/nearest_city.py",
-    "tests/test_nearest_city.py",
+    "pg_nearest_city/_sync/nearest_city.py",
+    "tests/_sync/test_nearest_city.py",
 ]
 
 [tool.ruff.lint]
@@ -93,6 +92,9 @@ testpaths = [
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: tests that require a running PostGIS database with loaded data",
+]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
