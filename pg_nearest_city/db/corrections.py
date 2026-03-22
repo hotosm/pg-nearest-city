@@ -106,25 +106,11 @@ DATA_CORRECTIONS: list[RowData] = [
             ),
         ],
     ),
-    UpdateData(
-        correction_type=_CorrectionType.ERRATUM,
-        description="Update Kosovo's alpha2 column to RS (Serbia)",
-        tbl_name="geocoding",
-        col_name="country",
-        col_val="RS",
-        result_limit=100,
-        predicate_cols=[
-            PredicateData(
-                col_name="country",
-                comparison=_PredicateComparison.EQUAL,
-                col_val="XK",
-            ),
-        ],
-    ),
 ]
 
 # GADM-specific: reparent HK/MO ADM1 entries from CHN to their own alpha3,
 # so the promotion pipeline treats them as standalone countries.
+# Also remap Kosovo's GADM code (XKO) to the user-assigned ISO code (XKX).
 GADM_DATA_CORRECTIONS: list[RowData] = [
     UpdateData(
         correction_type=_CorrectionType.ERRATUM,
@@ -163,6 +149,41 @@ GADM_DATA_CORRECTIONS: list[RowData] = [
                 col_name="name_1",
                 comparison=_PredicateComparison.EQUAL,
                 col_val="Hong Kong",
+            ),
+        ],
+    ),
+    UpdateData(
+        correction_type=_CorrectionType.ERRATUM,
+        description="Remap Kosovo's GADM code (XKO) to ISO user-assigned code (XKX)",
+        tbl_name="tmp_country_bounds_adm0",
+        col_name="gid0",
+        col_val="XKX",
+        result_limit=1,
+        predicate_cols=[
+            PredicateData(
+                col_name="gid0",
+                comparison=_PredicateComparison.EQUAL,
+                col_val="XKO",
+            ),
+        ],
+    ),
+]
+
+# NE-specific: remap Kosovo's Natural Earth code (KOS) to the user-assigned
+# ISO code (XKX) so it matches the ISO 3166-1 CSV and isn't absorbed.
+NE_DATA_CORRECTIONS: list[RowData] = [
+    UpdateData(
+        correction_type=_CorrectionType.ERRATUM,
+        description="Remap Kosovo's NE code (KOS) to ISO user-assigned code (XKX)",
+        tbl_name="tmp_country_bounds_adm0",
+        col_name="gid0",
+        col_val="XKX",
+        result_limit=1,
+        predicate_cols=[
+            PredicateData(
+                col_name="gid0",
+                comparison=_PredicateComparison.EQUAL,
+                col_val="KOS",
             ),
         ],
     ),

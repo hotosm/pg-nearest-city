@@ -7,6 +7,7 @@ from pg_nearest_city.db.corrections import (
     DATA_CORRECTIONS,
     GADM_DATA_CORRECTIONS,
     NE_BOUNDARY_CORRECTIONS,
+    NE_DATA_CORRECTIONS,
 )
 from pg_nearest_city.db.data_cleanup import make_queries
 
@@ -37,6 +38,29 @@ class TestDataCorrections:
             sql_str = q.as_string(conn)
             assert "UPDATE" in sql_str
         conn.close()
+
+
+class TestKosovoNotAbsorbed:
+    """Kosovo (XK/XKX) should be treated as a standalone entity."""
+
+    def test_no_kosovo_to_serbia_remap_in_common_corrections(self):
+        for row in DATA_CORRECTIONS:
+            assert not (row.tbl_name == "geocoding" and row.col_val == "RS"
+                        and any(p.col_val == "XK" for p in row.predicate_cols))
+
+    def test_gadm_remaps_xko_to_xkx(self):
+        kosovo = [r for r in GADM_DATA_CORRECTIONS
+                  if any(p.col_val == "XKO" for p in r.predicate_cols)]
+        assert len(kosovo) == 1
+        assert kosovo[0].col_val == "XKX"
+        assert kosovo[0].tbl_name == "tmp_country_bounds_adm0"
+
+    def test_ne_remaps_kos_to_xkx(self):
+        kosovo = [r for r in NE_DATA_CORRECTIONS
+                  if any(p.col_val == "KOS" for p in r.predicate_cols)]
+        assert len(kosovo) == 1
+        assert kosovo[0].col_val == "XKX"
+        assert kosovo[0].tbl_name == "tmp_country_bounds_adm0"
 
 
 class TestBoundaryCorrections:

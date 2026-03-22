@@ -370,6 +370,8 @@ _border_region_cases: list[GeoTestCase] = [
     ),  # Islay, tests island boundary coverage
     GeoTestCase(114.06932, 22.50166, "San Tin", "HK"),  # HK/CN border
     GeoTestCase(114.0683, 22.54554, "Shenzhen", "CN"),  # CN/HK border
+    GeoTestCase(20.86667, 42.88333, "Mitrovicë", "XK"),  # XK/RS border (split city)
+    GeoTestCase(21.58333, 42.84306, "Medveđa", "RS"),  # RS/XK border
 ]
 
 # Enclaves, exclaves, and non-contiguous territories only accessible through

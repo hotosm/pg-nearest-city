@@ -78,6 +78,11 @@ def parse_args():
         action="store_true",
         help="Drop ALL project tables before starting (recovery from partial runs)",
     )
+    parser.add_argument(
+        "--update-package",
+        action="store_true",
+        help="Copy exported data files to the installed package's data directory",
+    )
 
     return parser.parse_args()
 
@@ -161,6 +166,7 @@ def main() -> None:
             cache_files=not args.no_cache,
             compression=CompressionAlgorithm(args.compression),
             output_dir=Path(args.output_dir),
+            update_package=args.update_package,
             country_filter=args.country,
         ),
         logger=logger,

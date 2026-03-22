@@ -47,6 +47,7 @@ from pg_nearest_city.db.corrections import (
     DATA_CORRECTIONS,
     GADM_DATA_CORRECTIONS,
     NE_BOUNDARY_CORRECTIONS,
+    NE_DATA_CORRECTIONS,
     OVERPASS_BOUNDARY_TARGETS,
 )
 from pg_nearest_city.db.data_cleanup import make_queries
@@ -84,6 +85,7 @@ class Config:
     # Output configuration
     compression: CompressionAlgorithm = CompressionAlgorithm.AUTO
     output_dir: Path = Path("/data/output")
+    update_package: bool = False
 
     # Processing options
     boundary_source: BoundarySource = BoundarySource.GADM
@@ -384,6 +386,20 @@ class DataLoader:
 
         self.conn.commit()
         self.logger.info(f"Data exported to {self.config.output_dir}")
+
+        pkg_data_dir = Path(BaseNearestCity.DATA_PACKAGE_PATH)
+        exported = [p for p in [country_path, geocoding_path] if p.exists()]
+        if self.config.update_package:
+            pkg_data_dir.mkdir(parents=True, exist_ok=True)
+            for src in exported:
+                dest = pkg_data_dir / src.name
+                shutil.copy2(src, dest)
+                self.logger.info(f"Copied {src.name} -> {dest}")
+        elif self.config.output_dir.resolve() != pkg_data_dir.resolve():
+            self.logger.info(
+                f"To update bundled package data, re-run with --update-package "
+                f"or copy files manually to {pkg_data_dir}"
+            )
 
     def _clean_geonames(self):
         """Clean GeoNames data to simplified format."""
@@ -918,6 +934,8 @@ class DataLoader:
         rows = list(DATA_CORRECTIONS)
         if self.config.boundary_source == BoundarySource.GADM:
             rows.extend(GADM_DATA_CORRECTIONS)
+        else:
+            rows.extend(NE_DATA_CORRECTIONS)
         query_data = zip(rows, make_queries(rows), strict=False)
         with conn.cursor() as cur:
             for query_info, query in query_data:
