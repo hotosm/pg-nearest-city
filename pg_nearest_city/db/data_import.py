@@ -911,6 +911,16 @@ class DataLoader:
                         f"Upserted Overpass boundary for {target.alpha3} "
                         "into country_init"
                     )
+                    cur.execute(
+                        queries.clip_overlapping_countries(target.alpha2),
+                    )
+                    clipped = cur.rowcount
+                    conn.commit()
+                    if clipped:
+                        self.logger.info(
+                            f"Clipped {clipped} overlapping country/countries "
+                            f"against {target.alpha3}"
+                        )
                 self.registry.register(
                     geosource=GeoSource.OVERPASS,
                     filename=reg_key,

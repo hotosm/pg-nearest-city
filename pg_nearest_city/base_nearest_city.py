@@ -372,6 +372,10 @@ _border_region_cases: list[GeoTestCase] = [
     GeoTestCase(114.0683, 22.54554, "Shenzhen", "CN"),  # CN/HK border
     GeoTestCase(20.86667, 42.88333, "Mitrovicë", "XK"),  # XK/RS border (split city)
     GeoTestCase(21.58333, 42.84306, "Medveđa", "RS"),  # RS/XK border
+    GeoTestCase(34.46672, 31.50161, "Gaza", "PS"),  # PS/IL border
+    GeoTestCase(35.20422, 31.89964, "Ramallah", "PS"),  # PS/IL West Bank
+    GeoTestCase(-13.18797, 27.1418, "Laayoune", "EH"),  # EH/MA border
+    GeoTestCase(31.58247, 4.85165, "Juba", "SS"),  # SS/SD border
 ]
 
 # Enclaves, exclaves, and non-contiguous territories only accessible through
@@ -438,6 +442,7 @@ _overseas_territory_cases: list[GeoTestCase] = [
     GeoTestCase(114.17469, 22.27832, "Hong Kong", "HK"),  # HK SAR
     GeoTestCase(113.5439, 22.1987, "Macau", "MO"),  # MO SAR
     GeoTestCase(45.22878, -12.78234, "Mamoudzou", "YT"),  # Mayotte
+    GeoTestCase(19.93481, 60.09726, "Mariehamn", "AX"),  # Åland (FI autonomous)
 ]
 
 geo_test_cases: list[GeoTestCase] = (

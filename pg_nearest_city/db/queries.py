@@ -495,6 +495,29 @@ def upsert_overpass_boundary(tmp_tbl: str) -> sql.Composed:
     )
 
 
+def clip_overlapping_countries(alpha2: str) -> sql.Composed:
+    """Subtract an Overpass boundary from any overlapping country in country_init.
+
+    Overpass boundaries are authoritative — any country whose polygon overlaps
+    by more than 1 km² is clipped via ST_Difference.
+    """
+    return sql.SQL(
+        "UPDATE {dst} ci"
+        " SET {geom} = ST_Multi("
+        "   ST_Difference(ci.{geom}, ov.{geom})"
+        " )::geometry(MultiPolygon, 4326)"
+        " FROM {dst} ov"
+        " WHERE ov.{a2} = {target}"
+        "   AND ci.{a2} != {target}"
+        "   AND ci.{geom} && ov.{geom}"
+    ).format(
+        dst=sql.Identifier("country_init"),
+        geom=sql.Identifier("geom"),
+        a2=sql.Identifier("alpha2"),
+        target=sql.Literal(alpha2),
+    )
+
+
 def vacuum_analyze(full: bool) -> str:
     """VACUUM [FULL] and ANALYZE tables."""
     parts = [

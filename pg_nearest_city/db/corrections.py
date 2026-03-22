@@ -169,8 +169,8 @@ GADM_DATA_CORRECTIONS: list[RowData] = [
     ),
 ]
 
-# NE-specific: remap Kosovo's Natural Earth code (KOS) to the user-assigned
-# ISO code (XKX) so it matches the ISO 3166-1 CSV and isn't absorbed.
+# NE-specific: remap Natural Earth alpha3 codes to ISO 3166-1 codes so they
+# match the ISO CSV and aren't absorbed into parent countries.
 NE_DATA_CORRECTIONS: list[RowData] = [
     UpdateData(
         correction_type=_CorrectionType.ERRATUM,
@@ -184,6 +184,66 @@ NE_DATA_CORRECTIONS: list[RowData] = [
                 col_name="gid0",
                 comparison=_PredicateComparison.EQUAL,
                 col_val="KOS",
+            ),
+        ],
+    ),
+    UpdateData(
+        correction_type=_CorrectionType.ERRATUM,
+        description="Remap Palestine's NE code (PSX) to ISO code (PSE)",
+        tbl_name="tmp_country_bounds_adm0",
+        col_name="gid0",
+        col_val="PSE",
+        result_limit=1,
+        predicate_cols=[
+            PredicateData(
+                col_name="gid0",
+                comparison=_PredicateComparison.EQUAL,
+                col_val="PSX",
+            ),
+        ],
+    ),
+    UpdateData(
+        correction_type=_CorrectionType.ERRATUM,
+        description="Remap Åland's NE code (ALD) to ISO code (ALA)",
+        tbl_name="tmp_country_bounds_adm0",
+        col_name="gid0",
+        col_val="ALA",
+        result_limit=1,
+        predicate_cols=[
+            PredicateData(
+                col_name="gid0",
+                comparison=_PredicateComparison.EQUAL,
+                col_val="ALD",
+            ),
+        ],
+    ),
+    UpdateData(
+        correction_type=_CorrectionType.ERRATUM,
+        description="Remap Western Sahara's NE code (SAH) to ISO code (ESH)",
+        tbl_name="tmp_country_bounds_adm0",
+        col_name="gid0",
+        col_val="ESH",
+        result_limit=1,
+        predicate_cols=[
+            PredicateData(
+                col_name="gid0",
+                comparison=_PredicateComparison.EQUAL,
+                col_val="SAH",
+            ),
+        ],
+    ),
+    UpdateData(
+        correction_type=_CorrectionType.ERRATUM,
+        description="Remap South Sudan's NE code (SDS) to ISO code (SSD)",
+        tbl_name="tmp_country_bounds_adm0",
+        col_name="gid0",
+        col_val="SSD",
+        result_limit=1,
+        predicate_cols=[
+            PredicateData(
+                col_name="gid0",
+                comparison=_PredicateComparison.EQUAL,
+                col_val="SDS",
             ),
         ],
     ),
@@ -259,4 +319,10 @@ OVERPASS_BOUNDARY_TARGETS: list[OverpassBoundaryTarget] = [
         name="Sint Maarten",
         query=_make_iso_boundary_query("SX"),
     ),  # absent from both NE admin0 and GeoBoundaries
+    OverpassBoundaryTarget(
+        alpha2="EH",
+        alpha3="ESH",
+        name="Western Sahara",
+        query=_make_iso_boundary_query("EH"),
+    ),  # NE polygon doesn't cover Laayoune area
 ]

@@ -228,5 +228,5 @@ def get_required_countries(target: str) -> set[str]:
 # Natural Earth and GeoBoundaries.
 # ---------------------------------------------------------------------------
 OVERPASS_URLCONFIG = URLConfig(
-    url="https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+    url="https://overpass.private.coffee/api/interpreter"
 )

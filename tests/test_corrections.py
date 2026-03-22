@@ -40,8 +40,24 @@ class TestDataCorrections:
         conn.close()
 
 
-class TestKosovoNotAbsorbed:
-    """Kosovo (XK/XKX) should be treated as a standalone entity."""
+class TestNEAlpha3Remaps:
+    """NE uses non-ISO alpha3 codes for some ISO entities; verify remaps."""
+
+    NE_REMAPS = {
+        "ALD": "ALA",   # Åland
+        "KOS": "XKX",   # Kosovo
+        "PSX": "PSE",   # Palestine
+        "SAH": "ESH",   # Western Sahara
+        "SDS": "SSD",   # South Sudan
+    }
+
+    @pytest.mark.parametrize("ne_code,iso_code", NE_REMAPS.items())
+    def test_ne_remap_exists(self, ne_code, iso_code):
+        match = [r for r in NE_DATA_CORRECTIONS
+                 if any(p.col_val == ne_code for p in r.predicate_cols)]
+        assert len(match) == 1
+        assert match[0].col_val == iso_code
+        assert match[0].tbl_name == "tmp_country_bounds_adm0"
 
     def test_no_kosovo_to_serbia_remap_in_common_corrections(self):
         for row in DATA_CORRECTIONS:
@@ -51,13 +67,6 @@ class TestKosovoNotAbsorbed:
     def test_gadm_remaps_xko_to_xkx(self):
         kosovo = [r for r in GADM_DATA_CORRECTIONS
                   if any(p.col_val == "XKO" for p in r.predicate_cols)]
-        assert len(kosovo) == 1
-        assert kosovo[0].col_val == "XKX"
-        assert kosovo[0].tbl_name == "tmp_country_bounds_adm0"
-
-    def test_ne_remaps_kos_to_xkx(self):
-        kosovo = [r for r in NE_DATA_CORRECTIONS
-                  if any(p.col_val == "KOS" for p in r.predicate_cols)]
         assert len(kosovo) == 1
         assert kosovo[0].col_val == "XKX"
         assert kosovo[0].tbl_name == "tmp_country_bounds_adm0"
