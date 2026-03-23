@@ -1,16 +1,18 @@
-from typing import TYPE_CHECKING
-from unittest.mock import Mock, patch
-
 import psycopg
-import pytest
+import psycopg.sql
+import pytest  # noqa: F401 (needed after unasync)
+
+
 from pg_nearest_city.db.data_cleanup import (
+    DeleteData,
+    InsertData,
     PredicateData,
-    RowData,
+    UpdateData,
+    _ConflictAction,
+    _CorrectionType,
+    _PredicateComparison,
     make_queries,
 )
-
-if TYPE_CHECKING:
-    from pg_nearest_city.db.data_cleanup import _DML, _Comment, _PredicateComparison
 
 
 @pytest.fixture()
@@ -23,25 +25,21 @@ def test_db(test_db_conn_string):
     conn.close()
 
 
+@pytest.mark.integration
 class TestMakeQueries:
     """Test cases for make_queries function."""
 
-    @patch("pg_nearest_city.db.tables.get_all_table_classes")
-    def test_make_queries_update_single_predicate(self, mock_get_tables, test_db):
+    def test_make_queries_update_single_predicate(self, test_db):
         """Test make_queries with single UPDATE operation."""
-        mock_table = Mock()
-        mock_table.name = "geocoding"
-        mock_get_tables.return_value = [mock_table]
-
         predicate = PredicateData(
             col_name="city", comparison=_PredicateComparison.EQUAL, col_val="Old City"
         )
 
-        row_data = RowData(
+        row_data = UpdateData(
             col_name="city",
             col_val="New City",
-            comment=_Comment.SPELLING,
-            dml=_DML.UPDATE,
+            correction_type=_CorrectionType.SPELLING,
+            description="Test spelling correction",
             predicate_cols=[predicate],
             tbl_name="geocoding",
         )
@@ -57,13 +55,8 @@ class TestMakeQueries:
             """"city" = 'Old City'"""
         )
 
-    @patch("pg_nearest_city.db.tables.get_all_table_classes")
-    def test_make_queries_update_multiple_predicates(self, mock_get_tables, test_db):
-        """Test make_queries with single UPDATE operation."""
-        mock_table = Mock()
-        mock_table.name = "geocoding"
-        mock_get_tables.return_value = [mock_table]
-
+    def test_make_queries_update_multiple_predicates(self, test_db):
+        """Test make_queries with multiple predicates on UPDATE operation."""
         predicates = [
             PredicateData(
                 col_name="city",
@@ -78,11 +71,11 @@ class TestMakeQueries:
             ),
         ]
 
-        row_data = RowData(
+        row_data = UpdateData(
             col_name="city",
             col_val="New City",
-            comment=_Comment.SPELLING,
-            dml=_DML.UPDATE,
+            correction_type=_CorrectionType.SPELLING,
+            description="Test spelling correction",
             predicate_cols=predicates,
             tbl_name="geocoding",
         )
@@ -99,22 +92,17 @@ class TestMakeQueries:
             """'1995-05-23' AND '2038-01-01'"""
         )
 
-    @patch("pg_nearest_city.db.tables.get_all_table_classes")
-    def test_make_queries_delete_operation(self, mock_get_tables, test_db):
+    def test_make_queries_delete_operation(self, test_db):
         """Test make_queries with DELETE operation."""
-        mock_table = Mock()
-        mock_table.name = "geocoding"
-        mock_get_tables.return_value = [mock_table]
-
         predicate = PredicateData(
             col_name="city",
             comparison=_PredicateComparison.EQUAL,
             col_val="Dallas",
         )
 
-        row_data = RowData(
-            comment=_Comment.ERRATUM,
-            dml=_DML.DELETE,
+        row_data = DeleteData(
+            correction_type=_CorrectionType.ERRATUM,
+            description="Test erratum deletion",
             predicate_cols=[predicate],
             tbl_name="geocoding",
         )
@@ -127,19 +115,100 @@ class TestMakeQueries:
         query_str = queries[0].as_string(test_db)
         assert query_str == """DELETE FROM "geocoding" WHERE "city" = 'Dallas'"""
 
-    @patch("pg_nearest_city.db.tables.get_all_table_classes")
-    def test_make_queries_insert_raises_not_implemented(self, mock_get_tables):
-        """Test make_queries raises NotImplemented for INSERT operations."""
-        mock_table = Mock()
-        mock_table.name = "geocoding"
-        mock_get_tables.return_value = [mock_table]
+    def test_make_queries_insert_plain(self, test_db):
+        """Test make_queries with plain INSERT operation."""
+        row_data = InsertData(
+            correction_type=_CorrectionType.MISSING,
+            description="Test plain insert",
+            tbl_name="geocoding",
+            col_vals={"city": "Campione", "country": "IT"},
+        )
 
-        with pytest.raises(NotImplementedError):
-            row_data = RowData(
-                col_name="city",
-                col_val="New City",
-                comment=_Comment.MISSING,
-                dml=_DML.INSERT,
-                tbl_name="geocoding",
-            )
-            make_queries([row_data])
+        queries = make_queries([row_data])
+
+        assert len(queries) == 1
+        assert isinstance(queries[0], psycopg.sql.Composed)
+
+        query_str = queries[0].as_string(test_db)
+        assert query_str == (
+            """INSERT INTO "geocoding" ("city", "country") VALUES ('Campione', 'IT')"""
+        )
+
+    def test_make_queries_insert_where_not_exists(self, test_db):
+        """Test make_queries with INSERT ... WHERE NOT EXISTS."""
+        row_data = InsertData(
+            correction_type=_CorrectionType.MISSING,
+            description="Test idempotent insert",
+            tbl_name="geocoding",
+            col_vals={"city": "Campione", "country": "IT"},
+            existence_check=[
+                PredicateData(
+                    col_name="city",
+                    comparison=_PredicateComparison.EQUAL,
+                    col_val="Campione",
+                ),
+                PredicateData(
+                    col_name="country",
+                    comparison=_PredicateComparison.EQUAL,
+                    col_val="IT",
+                ),
+            ],
+        )
+
+        queries = make_queries([row_data])
+
+        assert len(queries) == 1
+        assert isinstance(queries[0], psycopg.sql.Composed)
+
+        query_str = queries[0].as_string(test_db)
+        assert query_str == (
+            """INSERT INTO "geocoding" ("city", "country") SELECT 'Campione', 'IT'"""
+            """ WHERE NOT EXISTS (SELECT 1 FROM "geocoding" WHERE """
+            """"city" = 'Campione' AND "country" = 'IT')"""
+        )
+
+    def test_make_queries_insert_upsert_do_nothing(self, test_db):
+        """Test make_queries with INSERT ... ON CONFLICT DO NOTHING."""
+        row_data = InsertData(
+            correction_type=_CorrectionType.MISSING,
+            description="Test upsert do nothing",
+            tbl_name="geocoding",
+            col_vals={"city": "Campione", "country": "IT"},
+            conflict_cols=["city", "country"],
+            conflict_action=_ConflictAction.NOTHING,
+        )
+
+        queries = make_queries([row_data])
+
+        assert len(queries) == 1
+        assert isinstance(queries[0], psycopg.sql.Composed)
+
+        query_str = queries[0].as_string(test_db)
+        assert query_str == (
+            """INSERT INTO "geocoding" ("city", "country") VALUES ('Campione', 'IT') """
+            """ON CONFLICT ("city", "country") DO NOTHING"""
+        )
+
+    def test_make_queries_insert_upsert_do_update(self, test_db):
+        """Test make_queries with INSERT ... ON CONFLICT DO UPDATE SET."""
+        row_data = InsertData(
+            correction_type=_CorrectionType.MISSING,
+            description="Test upsert do update",
+            tbl_name="geocoding",
+            col_vals={"city": "Campione", "country": "IT", "population": 2000},
+            conflict_cols=["city", "country"],
+            conflict_action=_ConflictAction.UPDATE,
+        )
+
+        queries = make_queries([row_data])
+
+        assert len(queries) == 1
+        assert isinstance(queries[0], psycopg.sql.Composed)
+
+        query_str = queries[0].as_string(test_db)
+        assert query_str == (
+            """INSERT INTO "geocoding" ("city", "country", "population") """
+            """VALUES ('Campione', 'IT', 2000) """
+            """ON CONFLICT ("city", "country") DO UPDATE SET """
+            """"population" = EXCLUDED."population\""""
+        )

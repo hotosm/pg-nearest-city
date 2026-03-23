@@ -29,7 +29,7 @@ services:
     volumes:
       # Mount project config
       - ./pyproject.toml:/data/pyproject.toml:ro
-      # Mount local package
+      # Mount local package (includes data/*.xz for auto-import)
       - ./pg_nearest_city:/opt/python/lib/python3.10/site-packages/pg_nearest_city:ro
       # Mount local tests
       - ./tests:/data/tests:ro

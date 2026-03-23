@@ -1,0 +1,18 @@
+name: Integration Tests
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+  # Weekly (Saturday 12:00 UTC)
+  schedule:
+    - cron: "0 12 * * 6"
+
+jobs:
+  integration:
+    uses: hotosm/gh-workflows/.github/workflows/test_compose.yml@2.0.9
+    with:
+      image_name: ghcr.io/${{ github.repository }}
+      tag_override: ci
+      compose_file: compose.yml
+      compose_service: code
+      compose_command: "pytest -m integration"

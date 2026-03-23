@@ -4,7 +4,8 @@ version = "1.0.0"
 description = "Given a geopoint, find the nearest city using PostGIS (reverse geocode)."
 authors = [
     {name = "Sam Woodcock", email = "sam.woodcock@hotosm.org"},
-    {name = "Emir Fabio Cognigni"}
+    {name = "Emir Fabio Cognigni"},
+    {name = "Stephan Garland", email = "stephan@sgarland.dev"}
 ]
 readme = "README.md"
 license = {text = "GPL-3.0-only"}
@@ -30,6 +31,7 @@ repository = "https://github.com/hotosm/pg-nearest-city"
 
 [project.scripts]
 build-sync = "unasync:main"
+pgnearest-load = "pg_nearest_city.scripts.load_database:main"
 
 [dependency-groups]
 test = [
@@ -44,8 +46,10 @@ docs = [
     "mkdocstrings-python>=1.13.0",
 ]
 dev = [
+    "GDAL>=3.6",
     "psutil>=6.1.1",
     "reverse-geocoder>=1.5.1",
+    "ruff>=0.9",
 ]
 
 [build-system]
@@ -54,10 +58,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["pg_nearest_city"]
-include = [
-    "pg_nearest_city/data/cities_1000_simple.txt",
-    "pg_nearest_city/data/voronois.wkb",
-]
 
 [tool.ruff]
 fix = true
@@ -67,14 +67,22 @@ exclude = [
     ".ruff_cache",
     "pg_nearest_city/__version__.py",
     # Generated files
-    "pg_nearest_city/nearest_city.py",
-    "tests/test_nearest_city.py",
+    "pg_nearest_city/_sync/nearest_city.py",
+    "tests/_sync/test_nearest_city.py",
 ]
+
 [tool.ruff.lint]
 # Note we do not use "I" for import sorting to avoid conflict with
 # import sorting after unasync is run
 select = ["E", "W", "D", "B", "F", "N", "Q"]
-ignore = ["N805", "B008"]
+ignore = [
+    "D105",  # magic method docstrings are not required
+    "D107",  # __init__ docstrings are not required
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D"]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
@@ -83,8 +91,11 @@ addopts = "-ra -q"
 testpaths = [
     "tests",
 ]
-asyncio_mode="auto"
-asyncio_default_fixture_loop_scope="function"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: tests that require a running PostGIS database with loaded data",
+]
 
 [tool.commitizen]
 name = "cz_conventional_commits"
