@@ -1,5 +1,49 @@
 # Changelog
 
+## 2.0.0 (2026-03-23)
+
+### Feat
+
+- adds package exports
+- added single-country import with tests
+- split testing pipeline; unit and integration
+- added bundled outputs to package
+- add --boundary-source and --compression CLI flags
+- CSV bootstrap import and query(lon, lat) API change
+- multi-source data import pipeline with Overpass and overlap resolution
+- source-specific data corrections and Overpass boundary targets
+- overhaul SQL queries for subdivision, NE support, and overlap resolution
+- add compression framework and MRO fix for filter_items
+- add boundary source types, Natural Earth datasets, and registry persistence
+- bumped version to 0.3.0
+- implement boundary corrections and HK/MO support in import pipeline
+- add SQL queries for boundary corrections and ADM1 promotion
+- add database performance settings for data loading
+- add declarative data corrections framework
+- add utility functions for subclass discovery and filtering
+- add datasets package
+- properly merges ADM_0 AND ADM_1 layers for HK and MO, but tests fail
+- adds data cleanup post-import
+
+### Fix
+
+- cherry-picks code from PR #62
+- addresses problem with MA and EH overlaps
+- re-added Kosovo as a sovereign country
+- added COMPRESSION.md
+- changed warning about database readiness to a log entry
+- improved caching
+- added geom column
+
+### Refactor
+
+- subdivide country table into Polygons, decouple country_init
+- update scripts and CLI for new datasets architecture
+- update table definitions for boundary correction workflow
+
+
+- remove benchmarks
+
 ## 1.0.0 (2026-03-15)
 
 ### Refactor
