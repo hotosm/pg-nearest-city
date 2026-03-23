@@ -198,7 +198,7 @@ async with AsyncNearestCity() as geocoder:
 Via Docker:
 
 ```bash
-docker compose run --rm code pytest
+docker compose run --rm test pytest
 ```
 
 Or locally (requires a running PostgreSQL instance with PostGIS and loaded data):

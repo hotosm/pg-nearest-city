@@ -16,5 +16,5 @@ jobs:
       image_name: ghcr.io/${{ github.repository }}
       tag_override: ci
       compose_file: compose.yml
-      compose_service: code
+      compose_service: test
       compose_command: "pytest -m 'not integration'"
