@@ -105,6 +105,7 @@ markers = [
 [tool.commitizen]
 name = "cz_conventional_commits"
 version = "1.0.0"
+version_provider = "uv"
 version_files = [
     "pyproject.toml:version",
     "pg_nearest_city/__version__.py",
