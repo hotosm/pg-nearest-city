@@ -8,6 +8,7 @@ on:
       # Workflow is triggered only if deps change
       - "pyproject.toml"
       - "Dockerfile"
+      - ".dockerignore"
   # Allow manual trigger
   workflow_dispatch:
 

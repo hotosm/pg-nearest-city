@@ -79,12 +79,14 @@ The pg-nearest-city approach:
 > - Reduced latency, when very precise locations are not required.
 > - Reduced load on free services such as Nominatim (particularly when running
 > in automated tests frequently).
+> - Reduced reliance on externally managed tools.
 
 ### Priorities
 
 - Lightweight package size.
 - Minimal memory footprint.
 - High performance.
+- Keeping package size as small as possible.
 
 ### How This Package Works
 
