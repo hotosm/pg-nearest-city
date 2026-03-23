@@ -15,7 +15,7 @@
 #     along with pg-nearest-city.  If not, see <https:#www.gnu.org/licenses/>.
 #
 ARG PYTHON_IMG_TAG=3.10
-ARG UV_IMG_TAG=0.5.2
+ARG UV_IMG_TAG=0.10.12
 FROM ghcr.io/astral-sh/uv:${UV_IMG_TAG} AS uv
 
 
