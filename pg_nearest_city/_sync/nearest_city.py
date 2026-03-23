@@ -75,11 +75,20 @@ class NearestCity:
 
         Checks for country and geocoding tables. If not present,
         attempts auto-import from exported CSV data files.
+
+        Uses a PostgreSQL advisory lock to prevent concurrent bootstrap races
+        when multiple processes start up simultaneously.
         """
         if not getattr(self, "connection", None):
             self._inform_user_if_not_context_manager()
 
+        # "pnc\0" as a 32-bit integer advisory lock ID
+        _advisory_lock_id = 0x706E6300
+
         try:
+            with self.connection.cursor() as cur:
+                cur.execute("SELECT pg_advisory_lock(%s)", (_advisory_lock_id,))
+
             self._logger.info("Starting database initialization check")
             with self.connection.cursor() as cur:
                 status = self._check_initialization_status(cur)
@@ -119,6 +128,9 @@ class NearestCity:
         except Exception as e:
             self._logger.error("Database initialization failed: %s", str(e))
             raise RuntimeError(f"Database initialization failed: {str(e)}") from e
+        finally:
+            with self.connection.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (_advisory_lock_id,))
 
     def _import_from_data(self, data_path: str) -> None:
         """Bootstrap the database from exported CSV data files."""
@@ -211,6 +223,8 @@ class NearestCity:
                     country=result[1],
                     lat=float(result[2]),
                     lon=float(result[3]),
+                    country_alpha3=result[4],
+                    country_name=result[5],
                 )
         except Exception as e:
             self._logger.error(f"Reverse geocoding failed: {str(e)}")

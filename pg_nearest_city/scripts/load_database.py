@@ -113,7 +113,6 @@ def _should_run(step: Step, skip: set[str] | None, only: set[str] | None) -> boo
 
 
 STEP_NAMES: list[str] = [
-    "00_check_prerequisites",
     "01_setup_db",
     "02_alter_db_params",
     "03_download_geonames",
@@ -173,7 +172,6 @@ def main() -> None:
     )
 
     load_steps: list[Step] = [
-        Step("00_prerequisites", dataloader._check_prerequisites, {}),
         Step("01_setup_db", dataloader._setup_db, {}),
         Step("02_alter_db_params", dataloader._alter_db_params, {}),
         Step(

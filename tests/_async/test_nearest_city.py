@@ -66,6 +66,8 @@ async def test_full_initialization_query():
     assert location is not None
     assert location.city == "New York City"
     assert isinstance(location, Location)
+    assert location.country_alpha3 == "USA"
+    assert location.country_name is not None
 
 
 async def test_init_without_context_manager():
@@ -114,6 +116,8 @@ async def test_init_db_at_startup_then_query(test_db):
     assert location is not None
     assert location.city == "New York City"
     assert isinstance(location, Location)
+    assert location.country_alpha3 == "USA"
+    assert location.country_name is not None
 
 
 @pytest.mark.integration

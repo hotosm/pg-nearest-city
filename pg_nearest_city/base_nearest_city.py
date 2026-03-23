@@ -79,6 +79,8 @@ class Location:
     country: str
     lat: float
     lon: float
+    country_alpha3: Optional[str] = None
+    country_name: Optional[str] = None
 
 
 @dataclass
@@ -226,7 +228,7 @@ class BaseNearestCity:
               SELECT ST_SetSRID(
                 ST_MakePoint({}, {}), 4326) AS geom
             )
-            SELECT g.city, g.country, g.lon, g.lat
+            SELECT g.city, g.country, g.lon, g.lat, c.alpha3, c.name
             FROM query_point qp
             JOIN country c ON ST_Covers(c.geom, qp.geom)
             CROSS JOIN LATERAL (

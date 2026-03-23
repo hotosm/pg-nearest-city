@@ -227,6 +227,4 @@ def get_required_countries(target: str) -> set[str]:
 # Used as a fallback boundary source for territories absent from both
 # Natural Earth and GeoBoundaries.
 # ---------------------------------------------------------------------------
-OVERPASS_URLCONFIG = URLConfig(
-    url="https://overpass.private.coffee/api/interpreter"
-)
+OVERPASS_URLCONFIG = URLConfig(url="https://overpass.private.coffee/api/interpreter")

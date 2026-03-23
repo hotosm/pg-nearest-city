@@ -46,6 +46,7 @@ docs = [
     "mkdocstrings-python>=1.13.0",
 ]
 dev = [
+    "GDAL>=3.6",
     "psutil>=6.1.1",
     "reverse-geocoder>=1.5.1",
     "ruff>=0.9",

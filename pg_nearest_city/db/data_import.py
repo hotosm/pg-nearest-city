@@ -9,12 +9,13 @@ import itertools
 import logging
 import re
 import shutil
-import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+
+from osgeo import gdal
 
 import psycopg
 from psycopg.rows import DictRow, dict_row
@@ -66,6 +67,8 @@ from pg_nearest_city.scripts.dataset_fetcher import (
 
 if TYPE_CHECKING:
     from pg_nearest_city.db.settings import DBConfigSetting
+
+gdal.UseExceptions()
 
 
 @dataclass
@@ -139,18 +142,6 @@ class Config:
         return a2_to_a3, a3_to_a2
 
 
-@dataclass
-class Prerequisite:
-    """A CLI binary required by the pipeline."""
-
-    binary_name: str
-    pkg_name_apt: str
-    pkg_name_yum: str
-    pkg_name_zyp: str
-    pkg_name_brew: str
-    pkg_name_ports: str
-
-
 class DataLoader:
     """Orchestrates fetching, processing, and importing datasets into the database."""
 
@@ -185,18 +176,6 @@ class DataLoader:
 
     def _setup_db(self, conn) -> None:
         setup_database(conn)
-
-    def _check_prerequisites(self, conn) -> None:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                cur.fetchall()
-        except Exception as e:
-            self.logger.error(f"Failed to reach DB: {e}")
-
-        for prog in ["ogr2ogr"]:
-            if not shutil.which(prog):
-                raise RuntimeError(f"{prog!r} not found - please install it")
 
     def _cleanup_temp_dir(self):
         """Clean up temporary directory."""
@@ -641,37 +620,34 @@ class DataLoader:
         return adm0_path, adm1_path
 
     def _run_ogr_boundary_import(
-        self, table_name: str, src_path: Path, sql: str
+        self, table_name: str, src_path: Path, sql_query: str
     ) -> None:
-        """Run ogr2ogr to load one boundary layer into a PostgreSQL staging table."""
-        cmd: list[str] = [
-            "ogr2ogr",
-            "-nln",
-            table_name,
-            "-nlt",
-            "PROMOTE_TO_MULTI",
-            "-lco",
-            "GEOMETRY_NAME=geom",
-            "-lco",
-            "SPATIAL_INDEX=NONE",
-            "--config",
-            "PG_USE_COPY=YES",
-            "-f",
-            "PostgreSQL",
-            f"PG:{self.config.db_conn_str}",
-            str(src_path),
-            "-dialect",
-            "OGRSQL",
-            "-sql",
-            sql,
-        ]
+        """Load one boundary layer into a PostgreSQL staging table via GDAL."""
+        gdal.SetConfigOption("PG_USE_COPY", "YES")
         try:
-            subprocess.run(cmd, check=True)
-        except subprocess.CalledProcessError:
+            result = gdal.VectorTranslate(
+                f"PG:{self.config.db_conn_str}",
+                str(src_path),
+                format="PostgreSQL",
+                SQLStatement=sql_query,
+                SQLDialect="OGRSQL",
+                layerName=table_name,
+                geometryType="PROMOTE_TO_MULTI",
+                layerCreationOptions=["GEOMETRY_NAME=geom", "SPATIAL_INDEX=NONE"],
+            )
+            if result is None:
+                raise RuntimeError(
+                    f"GDAL VectorTranslate failed for {table_name} "
+                    f"from {src_path.name}: {gdal.GetLastErrorMsg()}"
+                )
+            result = None  # release dataset
+        except Exception:
             self.logger.error(
                 f"Failed to import boundaries into {table_name} from {src_path.name}"
             )
             raise
+        finally:
+            gdal.SetConfigOption("PG_USE_COPY", None)
 
     def _import_country_boundaries(self, conn) -> None:
         """Import country boundaries into PostgreSQL from the configured source."""
@@ -759,31 +735,28 @@ class DataLoader:
 
             self.logger.info(f"Importing geoboundary: {geojson_path.name}")
 
-            # ogr2ogr: GeoJSON → tmp_country_staging
-            # -append: add to existing table (multiple files may be loaded)
-            # -nlt:    promote to multi so geometry type matches country table
-            ogr_cmd: list[str] = [
-                "ogr2ogr",
-                "-nln",
-                "tmp_country_staging",
-                "-append",
-                "-nlt",
-                "PROMOTE_TO_MULTI",
-                "--config",
-                "OGR_GEOJSON_MAX_OBJ_SIZE",
-                "0",
-                "-f",
-                "PostgreSQL",
-                f"PG:{self.config.db_conn_str}",
-                str(geojson_path.resolve()),
-            ]
-
+            gdal.SetConfigOption("OGR_GEOJSON_MAX_OBJ_SIZE", "0")
             try:
-                subprocess.run(ogr_cmd, check=True)
+                result = gdal.VectorTranslate(
+                    f"PG:{self.config.db_conn_str}",
+                    str(geojson_path.resolve()),
+                    format="PostgreSQL",
+                    layerName="tmp_country_staging",
+                    accessMode="append",
+                    geometryType="PROMOTE_TO_MULTI",
+                )
+                if result is None:
+                    raise RuntimeError(
+                        f"GDAL VectorTranslate failed for {geojson_path.name}: "
+                        f"{gdal.GetLastErrorMsg()}"
+                    )
+                result = None
                 imported_count += 1
-            except subprocess.CalledProcessError:
-                self.logger.error(f"ogr2ogr failed for {geojson_path.name}; skipping")
+            except Exception:
+                self.logger.error(f"GDAL failed for {geojson_path.name}; skipping")
                 continue
+            finally:
+                gdal.SetConfigOption("OGR_GEOJSON_MAX_OBJ_SIZE", None)
 
         if imported_count == 0:
             self.logger.warning("No geoboundary files were imported")
@@ -881,22 +854,24 @@ class DataLoader:
                 continue
 
             tmp_tbl = f"tmp_overpass_{target.alpha3.lower()}"
-            ogr_cmd: list[str] = [
-                "ogr2ogr",
-                "-nln",
-                tmp_tbl,
-                "-overwrite",
-                "-f",
-                "PostgreSQL",
-                f"PG:{self.config.db_conn_str}",
-                str(osm_path),
-                "multipolygons",
-            ]
             try:
-                subprocess.run(ogr_cmd, check=True)
-            except subprocess.CalledProcessError:
+                result = gdal.VectorTranslate(
+                    f"PG:{self.config.db_conn_str}",
+                    str(osm_path),
+                    format="PostgreSQL",
+                    layers=["multipolygons"],
+                    layerName=tmp_tbl,
+                    accessMode="overwrite",
+                )
+                if result is None:
+                    raise RuntimeError(
+                        f"GDAL VectorTranslate failed for Overpass boundary "
+                        f"{target.alpha3}: {gdal.GetLastErrorMsg()}"
+                    )
+                result = None
+            except Exception:
                 self.logger.warning(
-                    f"ogr2ogr failed for Overpass boundary {target.alpha3}; skipping"
+                    f"GDAL failed for Overpass boundary {target.alpha3}; skipping"
                 )
                 continue
 
