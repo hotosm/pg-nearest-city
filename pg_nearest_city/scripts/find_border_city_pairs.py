@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
+        "--max-pairs-per-country-pair",
+        type=int,
+        default=MAX_PAIRS_PER_COUNTRY_PAIR,
+        help="Maximum rows to emit per country pair",
+    )
+    parser.add_argument(
         "--country-pair",
         action="append",
         default=[],
@@ -51,6 +57,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.max_pairs_per_country_pair < 1:
+        raise SystemExit("--max-pairs-per-country-pair must be >= 1")
 
     # Parse --country-pair filters into normalized (alpha2_a, alpha2_b) tuples.
     pair_filters: set[tuple[str, str]] = set()
@@ -280,7 +288,7 @@ def main() -> None:
                 ROUND(distance_m::numeric, 1) AS distance_m,
                 ROUND(seam_length_m::numeric, 1) AS seam_length_m
             FROM ranked_pairs
-            WHERE rn <= {MAX_PAIRS_PER_COUNTRY_PAIR}
+            WHERE rn <= {args.max_pairs_per_country_pair}
             ORDER BY country_a, country_b, distance_m
             """
         )
