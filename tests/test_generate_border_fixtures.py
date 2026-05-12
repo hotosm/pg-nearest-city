@@ -3,27 +3,40 @@ from pathlib import Path
 import pytest
 
 from pg_nearest_city.scripts.generate_border_fixtures import (
-    DEFAULT_COUNTRY_PAIRS,
     count_rows_by_pair,
+    normalize_country_pair,
+    normalize_country_pairs,
+    pairs_without_rows,
     parse_args,
-    select_country_pairs,
 )
 
 
-def test_select_country_pairs_uses_default_allowlist_without_overrides():
-    assert select_country_pairs([]) == set(DEFAULT_COUNTRY_PAIRS)
+def test_normalize_country_pair_uppercases_and_sorts():
+    assert normalize_country_pair("us/mx") == ("MX", "US")
+    assert normalize_country_pair("SI / IT") == ("IT", "SI")
 
 
-def test_select_country_pairs_replaces_default_allowlist_with_overrides():
-    selected = select_country_pairs(["us/mx", "SI / IT"])
-
-    assert selected == {("MX", "US"), ("IT", "SI")}
-    assert not selected.intersection(DEFAULT_COUNTRY_PAIRS)
-
-
-def test_select_country_pairs_rejects_invalid_pair_shape():
+def test_normalize_country_pair_rejects_invalid_shape():
     with pytest.raises(ValueError, match="expected like IT/SI"):
-        select_country_pairs(["USA/MX"])
+        normalize_country_pair("USA/MX")
+
+
+def test_normalize_country_pairs_parses_multiple_values():
+    assert normalize_country_pairs(["us/mx", "SI / IT"]) == {
+        ("MX", "US"),
+        ("IT", "SI"),
+    }
+
+
+def test_normalize_country_pairs_returns_empty_set_without_input():
+    assert normalize_country_pairs([]) == set()
+
+
+def test_parse_args_defaults_country_pair_to_empty_for_global_discovery():
+    args = parse_args([])
+
+    assert args.country_pair == []
+    assert args.pairs_output is None
 
 
 def test_parse_args_accepts_pair_output_alias():
@@ -41,3 +54,13 @@ def test_count_rows_by_pair_counts_discovered_pair_keys():
     ]
 
     assert count_rows_by_pair(rows) == {"FR/MC": 2, "BD/IN": 1}
+
+
+def test_pairs_without_rows_reports_required_pairs_with_no_discoveries():
+    country_pairs = {("BD", "IN"), ("FR", "MC"), ("RS", "XK")}
+    rows = [
+        ("FR/MC", "FR", "MC"),
+        ("BD/IN", "BD", "IN"),
+    ]
+
+    assert pairs_without_rows(country_pairs, rows) == ["RS/XK"]

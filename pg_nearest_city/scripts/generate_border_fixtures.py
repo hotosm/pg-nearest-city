@@ -40,18 +40,6 @@ CSV_HEADER = [
 
 CountryPair = tuple[str, str]
 
-# Small v1 scope for reviewable border-fixture regeneration. These pairs cover
-# microstate, split-city/disputed, enclave/exclave, special territory, and
-# conventional long-border seams called out in the border-testing PRD.
-DEFAULT_COUNTRY_PAIRS: tuple[CountryPair, ...] = (
-    ("FR", "MC"),  # microstate
-    ("RS", "XK"),  # split-city / disputed seam
-    ("AE", "OM"),  # enclave / exclave-adjacent seam
-    ("ES", "GI"),  # special territory
-    ("CA", "US"),  # conventional long border
-    ("BD", "IN"),  # conventional long border with enclaves/history
-)
-
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse border fixture generator arguments."""
@@ -77,8 +65,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         default=[],
         help=(
-            "Country pair like IT/SI. Passing one or more values replaces the "
-            "built-in default allowlist instead of extending it."
+            "Country pair like IT/SI. Restricts discovery to the given pairs; "
+            "omit to discover all adjacent country pairs."
         ),
     )
     return parser.parse_args(argv)
@@ -89,20 +77,13 @@ def normalize_country_pair(raw: str) -> CountryPair:
     parts = [p.strip().upper() for p in raw.split("/", 1)]
     if len(parts) != 2 or not all(len(p) == 2 for p in parts):
         raise ValueError(f"Invalid country pair {raw!r}; expected like IT/SI")
-    return tuple(sorted(parts))
+    a, b = sorted(parts)
+    return a, b
 
 
 def normalize_country_pairs(raw_pairs: Iterable[str]) -> set[CountryPair]:
     """Parse multiple country-pair CLI values."""
     return {normalize_country_pair(raw) for raw in raw_pairs}
-
-
-def select_country_pairs(raw_country_pairs: Iterable[str]) -> set[CountryPair]:
-    """Return CLI override pairs or the default allowlist."""
-    overrides = normalize_country_pairs(raw_country_pairs)
-    if overrides:
-        return overrides
-    return set(DEFAULT_COUNTRY_PAIRS)
 
 
 def format_country_pair(pair: CountryPair) -> str:
@@ -120,6 +101,24 @@ def print_pair_summary(country_pairs: set[CountryPair], rows: list[tuple]) -> No
     counts = count_rows_by_pair(rows)
     for pair in sorted(format_country_pair(pair) for pair in country_pairs):
         print(f"{pair}: {counts[pair]} discovered city pairs")
+
+
+def print_discovered_pair_summary(rows: list[tuple]) -> None:
+    """Print per-pair counts using only what discovery produced."""
+    counts = count_rows_by_pair(rows)
+    for pair in sorted(counts):
+        print(f"{pair}: {counts[pair]} discovered city pairs")
+    print(f"total: {len(counts)} country pairs, {len(rows)} city pairs")
+
+
+def pairs_without_rows(country_pairs: set[CountryPair], rows: list[tuple]) -> list[str]:
+    """Return formatted country pairs with no discovered seed rows."""
+    counts = count_rows_by_pair(rows)
+    return [
+        pair
+        for pair in sorted(format_country_pair(pair) for pair in country_pairs)
+        if counts[pair] == 0
+    ]
 
 
 def discover_border_city_pairs(
@@ -374,24 +373,33 @@ def main() -> None:
         raise SystemExit("--max-pairs-per-country-pair must be >= 1")
 
     try:
-        country_pairs = select_country_pairs(args.country_pair)
+        country_pairs = normalize_country_pairs(args.country_pair)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
-    scope_label = "override" if args.country_pair else "default allowlist"
-    print(
-        "discovering border-city pairs for "
-        f"{len(country_pairs)} country pairs ({scope_label})"
-    )
+    if country_pairs:
+        scope_label = f"{len(country_pairs)} country pairs (override)"
+    else:
+        scope_label = "all adjacent country pairs (global)"
+    print(f"discovering border-city pairs for {scope_label}")
 
     with psycopg.connect(DBConnSettings().conn_string) as conn, conn.cursor() as cur:
         rows = discover_border_city_pairs(
             cur,
-            country_pairs=country_pairs,
+            country_pairs=country_pairs or None,
             max_pairs_per_country_pair=args.max_pairs_per_country_pair,
         )
 
-    print_pair_summary(country_pairs, rows)
+    if country_pairs:
+        print_pair_summary(country_pairs, rows)
+        missing_pairs = pairs_without_rows(country_pairs, rows)
+        if missing_pairs:
+            raise SystemExit(
+                "no discovered city pairs for required country pairs: "
+                + ", ".join(missing_pairs)
+            )
+    else:
+        print_discovered_pair_summary(rows)
 
     if args.pairs_output is not None:
         write_pair_rows(args.pairs_output, rows)
