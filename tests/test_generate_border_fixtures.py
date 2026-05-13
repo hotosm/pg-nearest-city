@@ -3,7 +3,9 @@ from pathlib import Path
 import pytest
 
 from pg_nearest_city.scripts.generate_border_fixtures import (
+    BORDER_PROBE_FIXTURE_PATH,
     CountryOracleRef,
+    PROBE_CSV_HEADER,
     count_probe_rows_by_pair_and_status,
     count_rows_by_pair,
     format_probe_status_summary,
@@ -14,6 +16,7 @@ from pg_nearest_city.scripts.generate_border_fixtures import (
     pairs_without_ok_probes,
     pairs_without_rows,
     parse_args,
+    write_probe_rows,
 )
 from pg_nearest_city.db.settings import DBConnSettings
 
@@ -44,7 +47,7 @@ def test_parse_args_defaults_country_pair_to_empty_for_global_discovery():
 
     assert args.country_pair == []
     assert args.pairs_output is None
-    assert args.probes_output is None
+    assert args.probes_output == BORDER_PROBE_FIXTURE_PATH
     assert args.cache_dir == Path("/data/cache")
     assert args.boundary_source == "naturalearth"
 
@@ -54,6 +57,71 @@ def test_parse_args_accepts_pair_output_alias():
 
     assert args.pairs_output == Path("tmp/pairs.csv")
     assert args.country_pair == ["FR/MC"]
+
+
+def test_parse_args_accepts_probe_output_override():
+    args = parse_args(["--probes-output", "tmp/probes.csv"])
+
+    assert args.probes_output == Path("tmp/probes.csv")
+
+
+def test_probe_csv_header_is_the_committed_fixture_contract():
+    assert PROBE_CSV_HEADER == [
+        "pair",
+        "source_country",
+        "expected_alpha2",
+        "expected_alpha3",
+        "expected_country_name",
+        "neighbor_country",
+        "source_city",
+        "source_lat",
+        "source_lon",
+        "neighbor_city",
+        "neighbor_lat",
+        "neighbor_lon",
+        "seam_lat",
+        "seam_lon",
+        "ring_distance_m",
+        "probe_lat",
+        "probe_lon",
+        "status",
+    ]
+    assert "id" not in PROBE_CSV_HEADER
+
+
+def test_write_probe_rows_uses_fixed_header_and_lf_line_endings(tmp_path):
+    output = tmp_path / "fixtures" / "border_country_probes.csv"
+    rows = [
+        (
+            "FR/MC",
+            "MC",
+            "MC",
+            "MCO",
+            "Monaco",
+            "FR",
+            "Monaco",
+            "43.7333000",
+            "7.4167000",
+            "Beausoleil",
+            "43.7436000",
+            "7.4238000",
+            "43.7381000",
+            "7.4210000",
+            100,
+            "43.7375000",
+            "7.4205000",
+            "ok",
+        )
+    ]
+
+    write_probe_rows(output, rows)
+
+    assert output.read_text(encoding="utf-8") == (
+        ",".join(PROBE_CSV_HEADER)
+        + "\nFR/MC,MC,MC,MCO,Monaco,FR,Monaco,43.7333000,7.4167000,"
+        "Beausoleil,43.7436000,7.4238000,43.7381000,7.4210000,100,"
+        "43.7375000,7.4205000,ok\n"
+    )
 
 
 def test_count_rows_by_pair_counts_discovered_pair_keys():
