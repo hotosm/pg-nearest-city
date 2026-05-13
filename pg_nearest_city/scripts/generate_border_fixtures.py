@@ -86,11 +86,97 @@ class CountryOracleRef:
         return f"{self.schema}.{self.table}"
 
 
+@dataclass(frozen=True, slots=True)
+class BorderFixtureRequest:
+    """Input bundle for one offline border fixture generator run."""
+
+    db: DBConnSettings
+    cache_dir: Path
+    boundary_source: BoundarySource
+    country_pairs: frozenset[CountryPair]
+    max_pairs_per_country_pair: int
+    ring_distances_m: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeRow:
+    """Named seam-relative probe row produced by the generator."""
+
+    pair: str
+    source_country: str
+    expected_alpha2: str
+    expected_alpha3: str
+    expected_country_name: str
+    neighbor_country: str
+    source_city: str
+    source_lat: object
+    source_lon: object
+    neighbor_city: str
+    neighbor_lat: object
+    neighbor_lon: object
+    seam_lat: object
+    seam_lon: object
+    ring_distance_m: int
+    probe_lat: object
+    probe_lon: object
+    status: str
+
+    def as_csv_row(self) -> tuple:
+        """Return the row in committed `PROBE_CSV_HEADER` order."""
+        return (
+            self.pair,
+            self.source_country,
+            self.expected_alpha2,
+            self.expected_alpha3,
+            self.expected_country_name,
+            self.neighbor_country,
+            self.source_city,
+            self.source_lat,
+            self.source_lon,
+            self.neighbor_city,
+            self.neighbor_lat,
+            self.neighbor_lon,
+            self.seam_lat,
+            self.seam_lon,
+            self.ring_distance_m,
+            self.probe_lat,
+            self.probe_lon,
+            self.status,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PairSummary:
+    """Per-country-pair discovery and probe-status summary for reporting."""
+
+    pair: str
+    discovered_rows: int
+    status_counts: Mapping[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class BorderFixtureResult:
+    """Output bundle from one offline border fixture generator run."""
+
+    probe_rows: list[ProbeRow]
+    pair_summaries: list[PairSummary]
+    missing_required_pairs: list[str]
+    missing_ok_pairs: list[str]
+    discovered_pair_count: int
+    requested_country_pairs: frozenset[CountryPair]
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse border fixture generator arguments."""
     parser = argparse.ArgumentParser(
         description="Regenerate offline border fixture seeds from runtime seams."
     )
+    group_db = parser.add_argument_group("group_db")
+    group_db.add_argument("--db-host", help="Database host")
+    group_db.add_argument("--db-port", type=int, help="Database port")
+    group_db.add_argument("--db-name", help="Database name")
+    group_db.add_argument("--db-user", help="Database username")
+    group_db.add_argument("--db-password", help="Database password")
     parser.add_argument(
         "--cache-dir",
         type=Path,
@@ -377,6 +463,148 @@ def corrected_country_oracle(
         if ref is not None and conn is not None:
             _drop_oracle_schema(conn, ref.schema)
             conn.close()
+
+
+class BorderFixtureGenerator:
+    """Single entry point that owns the full border fixture generation flow.
+
+    The generator owns the corrected-country oracle rebuild, the scratch-schema
+    lifecycle, border-pair discovery, and seam-probe generation.  Discovered
+    border pairs remain an internal step used to feed probe generation and are
+    not part of the public surface.
+    """
+
+    def __init__(
+        self,
+        request: BorderFixtureRequest,
+        *,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        if request.max_pairs_per_country_pair < 1:
+            raise ValueError("max_pairs_per_country_pair must be >= 1")
+        self._request = request
+        self._logger = logger or logging.getLogger("border_fixture_generator")
+
+    def run(self) -> BorderFixtureResult:
+        """Run the full sequence and return the named result bundle."""
+        _, result = self._run_with_pair_rows()
+        return result
+
+    def _run_with_pair_rows(self) -> tuple[list[tuple], BorderFixtureResult]:
+        """Run the full sequence; also surface raw pair-row tuples for legacy CSV.
+
+        Pair rows are not part of the public contract; they are exposed only so
+        the CLI can keep writing the optional development pair CSV during the
+        transitional slice. A follow-up slice removes the pair CSV adapter.
+        """
+        req = self._request
+        country_pairs = set(req.country_pairs)
+        with corrected_country_oracle(
+            conn_settings=req.db,
+            cache_dir=req.cache_dir,
+            boundary_source=req.boundary_source,
+            logger=self._logger,
+        ) as oracle:
+            self._logger.info(
+                "rebuilt corrected country oracle at %s", oracle.qualified_name
+            )
+            with (
+                psycopg.connect(req.db.conn_string) as conn,
+                conn.cursor() as cur,
+            ):
+                pair_rows = discover_border_city_pairs(
+                    cur,
+                    country_pairs=country_pairs or None,
+                    max_pairs_per_country_pair=req.max_pairs_per_country_pair,
+                )
+                raw_probe_rows = generate_seam_probe_rows(
+                    cur,
+                    oracle=oracle,
+                    ring_distances_m=req.ring_distances_m,
+                )
+
+        probe_rows = [_probe_row_from_tuple(row) for row in raw_probe_rows]
+        result = _build_result(
+            requested_country_pairs=frozenset(req.country_pairs),
+            pair_rows=pair_rows,
+            probe_rows=probe_rows,
+        )
+        return pair_rows, result
+
+
+def _probe_row_from_tuple(row: tuple) -> ProbeRow:
+    """Adapt a raw cursor tuple from `generate_seam_probe_rows` into `ProbeRow`."""
+    return ProbeRow(
+        pair=row[0],
+        source_country=row[1],
+        expected_alpha2=row[2],
+        expected_alpha3=row[3],
+        expected_country_name=row[4],
+        neighbor_country=row[5],
+        source_city=row[6],
+        source_lat=row[7],
+        source_lon=row[8],
+        neighbor_city=row[9],
+        neighbor_lat=row[10],
+        neighbor_lon=row[11],
+        seam_lat=row[12],
+        seam_lon=row[13],
+        ring_distance_m=row[14],
+        probe_lat=row[15],
+        probe_lon=row[16],
+        status=row[17],
+    )
+
+
+def _build_result(
+    *,
+    requested_country_pairs: frozenset[CountryPair],
+    pair_rows: list[tuple],
+    probe_rows: list[ProbeRow],
+) -> BorderFixtureResult:
+    """Derive named summary data from the internal pair/probe row sequences."""
+    discovered_counts = count_rows_by_pair(pair_rows)
+    status_counts_by_pair: dict[str, Counter[str]] = {}
+    for probe in probe_rows:
+        status_counts_by_pair.setdefault(probe.pair, Counter())[probe.status] += 1
+
+    if requested_country_pairs:
+        summary_keys = sorted(
+            format_country_pair(pair) for pair in requested_country_pairs
+        )
+    else:
+        summary_keys = sorted(discovered_counts)
+
+    pair_summaries = [
+        PairSummary(
+            pair=pair,
+            discovered_rows=discovered_counts.get(pair, 0),
+            status_counts=dict(status_counts_by_pair.get(pair, Counter())),
+        )
+        for pair in summary_keys
+    ]
+
+    if requested_country_pairs:
+        missing_required_pairs = [
+            pair for pair in summary_keys if discovered_counts.get(pair, 0) == 0
+        ]
+        missing_ok_pairs = [
+            pair
+            for pair in summary_keys
+            if status_counts_by_pair.get(pair, Counter())["ok"] == 0
+        ]
+    else:
+        missing_required_pairs = []
+        missing_ok_pairs = []
+
+    return BorderFixtureResult(
+        probe_rows=probe_rows,
+        pair_summaries=pair_summaries,
+        missing_required_pairs=missing_required_pairs,
+        missing_ok_pairs=missing_ok_pairs,
+        discovered_pair_count=len(pair_rows),
+        requested_country_pairs=requested_country_pairs,
+    )
 
 
 def normalize_country_pair(raw: str) -> CountryPair:
@@ -960,6 +1188,30 @@ def write_probe_rows(output: Path, rows: list[tuple]) -> None:
         writer.writerows(rows)
 
 
+def _print_result_summary(result: BorderFixtureResult) -> None:
+    """Print operator-facing summary derived from the generator's named result."""
+    if result.requested_country_pairs:
+        for summary in result.pair_summaries:
+            print(
+                f"{summary.pair}: {summary.discovered_rows} discovered city pairs, "
+                f"{format_probe_status_summary(summary.status_counts)}"
+            )
+        print(f"total: {len(result.probe_rows)} probe rows")
+    else:
+        for summary in result.pair_summaries:
+            print(f"{summary.pair}: {summary.discovered_rows} discovered city pairs")
+        print(
+            f"total: {len(result.pair_summaries)} country pairs, "
+            f"{result.discovered_pair_count} city pairs"
+        )
+        for summary in result.pair_summaries:
+            print(
+                f"{summary.pair}: {summary.discovered_rows} discovered city pairs, "
+                f"{format_probe_status_summary(summary.status_counts)}"
+            )
+        print(f"total: {len(result.probe_rows)} probe rows")
+
+
 def main() -> None:
     """Run the offline border fixture seed generator."""
     args = parse_args()
@@ -977,56 +1229,54 @@ def main() -> None:
         scope_label = "all adjacent country pairs (global)"
     print(f"discovering border-city pairs for {scope_label}")
 
-    conn_settings = DBConnSettings()
+    conn_settings = DBConnSettings().with_overrides(
+        **{
+            k.lstrip("db_"): v
+            for k, v in args._get_kwargs()
+            if k.startswith("db_") and v
+        }
+    )
     boundary_source = BoundarySource(args.boundary_source)
-    probe_rows: list[tuple] = []
+
+    request = BorderFixtureRequest(
+        db=conn_settings,
+        cache_dir=args.cache_dir,
+        boundary_source=boundary_source,
+        country_pairs=frozenset(country_pairs),
+        max_pairs_per_country_pair=args.max_pairs_per_country_pair,
+        ring_distances_m=PROBE_RING_DISTANCES_M,
+    )
+    generator = BorderFixtureGenerator(request)
     try:
-        with corrected_country_oracle(
-            conn_settings=conn_settings,
-            cache_dir=args.cache_dir,
-            boundary_source=boundary_source,
-        ) as oracle:
-            print(f"rebuilt corrected country oracle at {oracle.qualified_name}")
-            with (
-                psycopg.connect(conn_settings.conn_string) as conn,
-                conn.cursor() as cur,
-            ):
-                rows = discover_border_city_pairs(
-                    cur,
-                    country_pairs=country_pairs or None,
-                    max_pairs_per_country_pair=args.max_pairs_per_country_pair,
-                )
-                probe_rows = generate_seam_probe_rows(cur, oracle=oracle)
+        pair_rows, result = generator._run_with_pair_rows()
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
 
-    if country_pairs:
-        summary_pairs = [format_country_pair(pair) for pair in country_pairs]
-        print_probe_summary(summary_pairs, rows, probe_rows)
-        missing_pairs = pairs_without_rows(country_pairs, rows)
-        if missing_pairs:
-            raise SystemExit(
-                "no discovered city pairs for required country pairs: "
-                + ", ".join(missing_pairs)
-            )
-        missing_ok_pairs = pairs_without_ok_probes(country_pairs, probe_rows)
-        if missing_ok_pairs:
-            raise SystemExit(
-                "no usable seam probe rows for required country pairs: "
-                + ", ".join(missing_ok_pairs)
-            )
-    else:
-        print_discovered_pair_summary(rows)
-        print_probe_summary(count_rows_by_pair(rows).keys(), rows, probe_rows)
+    _print_result_summary(result)
+
+    if result.missing_required_pairs:
+        raise SystemExit(
+            "no discovered city pairs for required country pairs: "
+            + ", ".join(result.missing_required_pairs)
+        )
+    if result.missing_ok_pairs:
+        raise SystemExit(
+            "no usable seam probe rows for required country pairs: "
+            + ", ".join(result.missing_ok_pairs)
+        )
 
     if args.pairs_output is not None:
-        write_pair_rows(args.pairs_output, rows)
-        print(f"wrote {len(rows)} pairs to {args.pairs_output}")
+        write_pair_rows(args.pairs_output, pair_rows)
+        print(f"wrote {len(pair_rows)} pairs to {args.pairs_output}")
     else:
-        print(f"discovered {len(rows)} pairs; pass --pairs-output to write CSV")
+        print(
+            f"discovered {len(pair_rows)} pairs; pass --pairs-output to write CSV"
+        )
 
-    write_probe_rows(args.probes_output, probe_rows)
-    print(f"wrote {len(probe_rows)} probes to {args.probes_output}")
+    write_probe_rows(
+        args.probes_output, [row.as_csv_row() for row in result.probe_rows]
+    )
+    print(f"wrote {len(result.probe_rows)} probes to {args.probes_output}")
 
 
 if __name__ == "__main__":
