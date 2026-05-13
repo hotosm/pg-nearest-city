@@ -478,12 +478,12 @@ class BorderFixtureGenerator:
                 psycopg.connect(req.db.conn_string) as conn,
                 conn.cursor() as cur,
             ):
-                pair_rows = discover_border_city_pairs(
+                pair_rows = self._discover_border_city_pairs(
                     cur,
                     country_pairs=country_pairs or None,
                     max_pairs_per_country_pair=req.max_pairs_per_country_pair,
                 )
-                raw_probe_rows = generate_seam_probe_rows(
+                raw_probe_rows = self._generate_seam_probe_rows(
                     cur,
                     oracle=oracle,
                     ring_distances_m=req.ring_distances_m,
@@ -495,6 +495,474 @@ class BorderFixtureGenerator:
             pair_rows=pair_rows,
             probe_rows=probe_rows,
         )
+
+    def _discover_border_city_pairs(
+        self,
+        cur: psycopg.Cursor,
+        *,
+        country_pairs: set[CountryPair] | None = None,
+        max_pairs_per_country_pair: int = MAX_PAIRS_PER_COUNTRY_PAIR,
+    ) -> list[tuple]:
+        """Discover nearby cross-border city pairs using runtime-country seams."""
+        if max_pairs_per_country_pair < 1:
+            raise ValueError("max_pairs_per_country_pair must be >= 1")
+
+        cur.execute(
+            f"""
+            CREATE TEMP TABLE tmp_normalized_countries ON COMMIT DROP AS
+            SELECT
+                alpha2,
+                MIN(name) AS name,
+                ST_Multi(ST_UnaryUnion(ST_Collect(geom))) AS geom
+            FROM {COUNTRY_TABLE}
+            GROUP BY alpha2
+            """
+        )
+        # tmp_normalized_countries kept materialized: self-joined in the seam build
+        # below and the GIST/alpha2 indexes materially help that self-join.
+        cur.execute(
+            """
+            CREATE INDEX tmp_normalized_countries_alpha2_idx
+            ON tmp_normalized_countries (alpha2)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX tmp_normalized_countries_geom_idx
+            ON tmp_normalized_countries USING GIST (geom)
+            """
+        )
+        cur.execute("ANALYZE tmp_normalized_countries")
+
+        # Inline the optional country-pair restriction as a VALUES list so the
+        # filter rides along with the seam build rather than a separate temp
+        # table.  Pairs come from `normalize_country_pair`, which already
+        # validates each side as a 2-char alpha-2 code.
+        pair_join_sql: sql.Composable = sql.SQL("")
+        if country_pairs:
+            pair_values = sql.SQL(", ").join(
+                sql.SQL("({}, {})").format(sql.Literal(a), sql.Literal(b))
+                for a, b in sorted(country_pairs)
+            )
+            pair_join_sql = sql.SQL(
+                " JOIN (VALUES {values}) AS p(country_a, country_b)"
+                " ON p.country_a = a.alpha2 AND p.country_b = b.alpha2"
+            ).format(values=pair_values)
+
+        cur.execute(
+            sql.SQL(
+                """
+                CREATE TEMP TABLE tmp_valid_seams ON COMMIT DROP AS
+                WITH seams AS (
+                    SELECT
+                        a.alpha2 AS country_a,
+                        b.alpha2 AS country_b,
+                        a.name AS country_name_a,
+                        b.name AS country_name_b,
+                        ST_LineMerge(
+                            ST_UnaryUnion(
+                                ST_CollectionExtract(
+                                    ST_Intersection(ST_Boundary(a.geom), ST_Boundary(b.geom)),
+                                    2
+                                )
+                            )
+                        ) AS seam_geom
+                    FROM tmp_normalized_countries a
+                    JOIN tmp_normalized_countries b
+                      ON a.alpha2 < b.alpha2
+                     AND a.geom && b.geom
+                     AND ST_Intersects(a.geom, b.geom)
+                    {pair_join}
+                )
+                SELECT
+                    *,
+                    ST_Length(seam_geom::geography) AS seam_length_m
+                FROM seams
+                WHERE seam_geom IS NOT NULL
+                  AND NOT ST_IsEmpty(seam_geom)
+                  AND ST_Length(seam_geom::geography) >= {min_seam_length}
+                """
+            ).format(
+                pair_join=pair_join_sql,
+                min_seam_length=sql.Literal(MIN_SEAM_LENGTH_M),
+            )
+        )
+        # tmp_valid_seams kept materialized: read again later by
+        # _generate_seam_probe_rows on the same connection, so the seam build
+        # cost is amortized across both stages.
+        cur.execute(
+            """
+            CREATE INDEX tmp_valid_seams_pair_idx
+            ON tmp_valid_seams (country_a, country_b)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX tmp_valid_seams_geom_idx
+            ON tmp_valid_seams USING GIST (seam_geom)
+            """
+        )
+        cur.execute("ANALYZE tmp_valid_seams")
+
+        cur.execute(
+            f"""
+            CREATE TEMP TABLE tmp_seam_cities_a ON COMMIT DROP AS
+            SELECT
+                s.country_a,
+                s.country_b,
+                s.country_name_a,
+                s.country_name_b,
+                s.seam_length_m,
+                g.city,
+                g.lat,
+                g.lon,
+                g.geom
+            FROM tmp_valid_seams s
+            JOIN geocoding g
+              ON g.country = s.country_a
+             AND g.geom && ST_Expand(s.seam_geom, {SEAM_BBOX_DEG})
+             AND ST_DWithin(g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M})
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX tmp_seam_cities_a_pair_idx
+            ON tmp_seam_cities_a (country_a, country_b)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX tmp_seam_cities_a_geom_idx
+            ON tmp_seam_cities_a USING GIST (geom)
+            """
+        )
+        cur.execute("ANALYZE tmp_seam_cities_a")
+
+        cur.execute(
+            f"""
+            CREATE TEMP TABLE tmp_seam_cities_b ON COMMIT DROP AS
+            SELECT
+                s.country_a,
+                s.country_b,
+                g.city,
+                g.lat,
+                g.lon,
+                g.geom
+            FROM tmp_valid_seams s
+            JOIN geocoding g
+              ON g.country = s.country_b
+             AND g.geom && ST_Expand(s.seam_geom, {SEAM_BBOX_DEG})
+             AND ST_DWithin(g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M})
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX tmp_seam_cities_b_pair_idx
+            ON tmp_seam_cities_b (country_a, country_b)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX tmp_seam_cities_b_geom_idx
+            ON tmp_seam_cities_b USING GIST (geom)
+            """
+        )
+        cur.execute("ANALYZE tmp_seam_cities_b")
+
+        cur.execute("DROP TABLE IF EXISTS tmp_discovered_border_city_pairs")
+        cur.execute(
+            f"""
+            CREATE TEMP TABLE tmp_discovered_border_city_pairs ON COMMIT DROP AS
+            WITH candidate_pairs AS (
+                SELECT DISTINCT
+                    a.country_a,
+                    a.country_b,
+                    a.country_name_a,
+                    a.country_name_b,
+                    a.seam_length_m,
+                    a.city AS city_a,
+                    b.city AS city_b,
+                    a.lat AS lat_a,
+                    a.lon AS lon_a,
+                    b.lat AS lat_b,
+                    b.lon AS lon_b,
+                    a.geom AS geom_a,
+                    b.geom AS geom_b,
+                    ST_Distance(a.geom::geography, b.geom::geography) AS distance_m
+                FROM tmp_seam_cities_a a
+                JOIN LATERAL (
+                    SELECT
+                        b.city,
+                        b.lat,
+                        b.lon,
+                        b.geom
+                    FROM tmp_seam_cities_b b
+                    WHERE b.country_a = a.country_a
+                      AND b.country_b = a.country_b
+                      AND b.geom && ST_Expand(a.geom, {PAIR_BBOX_DEG})
+                      AND ST_DWithin(a.geom::geography, b.geom::geography, {PAIR_RADIUS_M})
+                    ORDER BY b.geom <-> a.geom
+                    LIMIT {NEAREST_CANDIDATES_PER_CITY}
+                ) b ON TRUE
+            ),
+            ranked_pairs AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY country_a, country_b
+                        ORDER BY distance_m, city_a, city_b
+                    ) AS rn
+                FROM candidate_pairs
+            )
+            SELECT
+                country_a || '/' || country_b AS pair,
+                country_a,
+                country_b,
+                country_name_a,
+                country_name_b,
+                city_a,
+                city_b,
+                lat_a,
+                lon_a,
+                lat_b,
+                lon_b,
+                geom_a,
+                geom_b,
+                distance_m,
+                seam_length_m
+            FROM ranked_pairs
+            WHERE rn <= {max_pairs_per_country_pair}
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX tmp_discovered_border_city_pairs_pair_idx
+            ON tmp_discovered_border_city_pairs (country_a, country_b)
+            """
+        )
+        cur.execute("ANALYZE tmp_discovered_border_city_pairs")
+
+        cur.execute(
+            """
+            SELECT
+                pair,
+                country_a,
+                country_b,
+                country_name_a,
+                country_name_b,
+                city_a,
+                city_b,
+                lat_a,
+                lon_a,
+                lat_b,
+                lon_b,
+                ROUND(distance_m::numeric, 1) AS distance_m,
+                ROUND(seam_length_m::numeric, 1) AS seam_length_m
+            FROM tmp_discovered_border_city_pairs
+            ORDER BY country_a, country_b, distance_m, city_a, city_b
+            """
+        )
+        return cur.fetchall()
+
+    def _generate_seam_probe_rows(
+        self,
+        cur: psycopg.Cursor,
+        *,
+        oracle: CountryOracleRef,
+        ring_distances_m: Iterable[int] = PROBE_RING_DISTANCES_M,
+    ) -> list[tuple]:
+        """Generate seam-relative inward probe rows from discovered seed pairs.
+
+        `_discover_border_city_pairs` must have been called first on the same
+        connection so the temporary seam and selected-pair tables exist.
+        """
+        distances = sorted({int(distance) for distance in ring_distances_m})
+        if not distances or distances[0] <= 0:
+            raise ValueError("ring_distances_m must contain positive distances")
+
+        # Inline the ring distances as a VALUES list rather than a scratch
+        # table.  The CROSS JOIN consumes them exactly once and the final
+        # SELECT orders by ring_distance_m, so row order is independent of the
+        # VALUES order.
+        ring_distance_values = sql.SQL(", ").join(
+            sql.SQL("({})").format(sql.Literal(distance)) for distance in distances
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                WITH source_seeds AS (
+                    SELECT
+                        ROW_NUMBER() OVER (
+                            ORDER BY pair, distance_m, city_a, city_b, country_a
+                        ) * 2 - 1 AS seed_id,
+                        pair,
+                        country_a AS source_country,
+                        country_b AS neighbor_country,
+                        city_a AS source_city,
+                        lat_a AS source_lat,
+                        lon_a AS source_lon,
+                        city_b AS neighbor_city,
+                        lat_b AS neighbor_lat,
+                        lon_b AS neighbor_lon,
+                        geom_a AS source_geom,
+                        geom_b AS neighbor_geom
+                    FROM tmp_discovered_border_city_pairs
+                    UNION ALL
+                    SELECT
+                        ROW_NUMBER() OVER (
+                            ORDER BY pair, distance_m, city_a, city_b, country_b
+                        ) * 2 AS seed_id,
+                        pair,
+                        country_b AS source_country,
+                        country_a AS neighbor_country,
+                        city_b AS source_city,
+                        lat_b AS source_lat,
+                        lon_b AS source_lon,
+                        city_a AS neighbor_city,
+                        lat_a AS neighbor_lat,
+                        lon_a AS neighbor_lon,
+                        geom_b AS source_geom,
+                        geom_a AS neighbor_geom
+                    FROM tmp_discovered_border_city_pairs
+                ),
+                seam_anchors AS (
+                    SELECT
+                        seed.*,
+                        ST_ClosestPoint(seam.seam_geom, seed.source_geom) AS seam_geom,
+                        ST_Azimuth(
+                            ST_ClosestPoint(seam.seam_geom, seed.source_geom),
+                            seed.source_geom
+                        ) AS source_normal
+                    FROM source_seeds seed
+                    JOIN tmp_valid_seams seam
+                      ON seam.country_a = LEAST(seed.source_country, seed.neighbor_country)
+                     AND seam.country_b = GREATEST(
+                         seed.source_country,
+                         seed.neighbor_country
+                     )
+                ),
+                candidates AS (
+                    SELECT
+                        anchor.*,
+                        distances.distance_m AS ring_distance_m,
+                        direction.direction_index,
+                        CASE
+                            WHEN anchor.source_normal IS NULL THEN NULL
+                            ELSE ST_Project(
+                                anchor.seam_geom::geography,
+                                distances.distance_m::double precision,
+                                anchor.source_normal + direction.bearing_delta
+                            )::geometry
+                        END AS candidate_geom
+                    FROM seam_anchors anchor
+                    CROSS JOIN (VALUES {ring_distances}) AS distances(distance_m)
+                    CROSS JOIN (VALUES (0, 0.0), (1, pi())) AS direction(
+                        direction_index, bearing_delta
+                    )
+                ),
+                classified_candidates AS (
+                    SELECT
+                        candidate.*,
+                        EXISTS (
+                            SELECT 1
+                            FROM {oracle} source_country
+                            WHERE source_country.alpha2 = candidate.source_country
+                              AND candidate.candidate_geom IS NOT NULL
+                              AND ST_Covers(source_country.geom, candidate.candidate_geom)
+                        ) AS covers_source
+                    FROM candidates candidate
+                ),
+                classified_rows AS (
+                    SELECT
+                        candidate.seed_id,
+                        candidate.pair,
+                        candidate.source_country,
+                        candidate.neighbor_country,
+                        candidate.source_city,
+                        candidate.source_lat,
+                        candidate.source_lon,
+                        candidate.neighbor_city,
+                        candidate.neighbor_lat,
+                        candidate.neighbor_lon,
+                        candidate.seam_geom,
+                        candidate.ring_distance_m,
+                        COUNT(*) FILTER (
+                            WHERE candidate.covers_source
+                        ) AS source_cover_count,
+                        (ARRAY_AGG(
+                            candidate.candidate_geom
+                            ORDER BY candidate.direction_index
+                        ) FILTER (WHERE candidate.covers_source))[1] AS accepted_probe_geom
+                    FROM classified_candidates candidate
+                    GROUP BY
+                        candidate.seed_id,
+                        candidate.pair,
+                        candidate.source_country,
+                        candidate.neighbor_country,
+                        candidate.source_city,
+                        candidate.source_lat,
+                        candidate.source_lon,
+                        candidate.neighbor_city,
+                        candidate.neighbor_lat,
+                        candidate.neighbor_lon,
+                        candidate.seam_geom,
+                        candidate.ring_distance_m
+                )
+                SELECT
+                    row.pair,
+                    row.source_country,
+                    oracle_country.alpha2 AS expected_alpha2,
+                    oracle_country.alpha3 AS expected_alpha3,
+                    oracle_country.name AS expected_country_name,
+                    row.neighbor_country,
+                    row.source_city,
+                    ROUND(row.source_lat::numeric, 7) AS source_lat,
+                    ROUND(row.source_lon::numeric, 7) AS source_lon,
+                    row.neighbor_city,
+                    ROUND(row.neighbor_lat::numeric, 7) AS neighbor_lat,
+                    ROUND(row.neighbor_lon::numeric, 7) AS neighbor_lon,
+                    ROUND(ST_Y(row.seam_geom)::numeric, 7) AS seam_lat,
+                    ROUND(ST_X(row.seam_geom)::numeric, 7) AS seam_lon,
+                    row.ring_distance_m,
+                    CASE
+                        WHEN row.source_cover_count = 1 THEN
+                            ROUND(ST_Y(row.accepted_probe_geom)::numeric, 7)
+                        ELSE NULL
+                    END AS probe_lat,
+                    CASE
+                        WHEN row.source_cover_count = 1 THEN
+                            ROUND(ST_X(row.accepted_probe_geom)::numeric, 7)
+                        ELSE NULL
+                    END AS probe_lon,
+                    CASE
+                        WHEN row.source_cover_count = 1 THEN 'ok'
+                        WHEN row.source_cover_count > 1 THEN 'ambiguous'
+                        ELSE 'unplaceable'
+                    END AS status
+                FROM classified_rows row
+                JOIN {oracle} oracle_country
+                  ON oracle_country.alpha2 = row.source_country
+                ORDER BY
+                    row.pair,
+                    row.source_country,
+                    row.source_city,
+                    row.source_lat,
+                    row.source_lon,
+                    row.neighbor_country,
+                    row.neighbor_city,
+                    row.neighbor_lat,
+                    row.neighbor_lon,
+                    ST_Y(row.seam_geom),
+                    ST_X(row.seam_geom),
+                    row.ring_distance_m
+                """
+            ).format(
+                oracle=sql.Identifier(oracle.schema, oracle.table),
+                ring_distances=ring_distance_values,
+            )
+        )
+        return cur.fetchall()
 
 
 def _probe_row_from_tuple(row: tuple) -> ProbeRow:
@@ -596,474 +1064,6 @@ def format_probe_status_summary(status_counts: Mapping[str, int]) -> str:
     return ", ".join(
         f"{status}={status_counts.get(status, 0)}" for status in PROBE_STATUSES
     )
-
-
-def discover_border_city_pairs(
-    cur: psycopg.Cursor,
-    *,
-    country_pairs: set[CountryPair] | None = None,
-    max_pairs_per_country_pair: int = MAX_PAIRS_PER_COUNTRY_PAIR,
-) -> list[tuple]:
-    """Discover nearby cross-border city pairs using runtime-country seams."""
-    if max_pairs_per_country_pair < 1:
-        raise ValueError("max_pairs_per_country_pair must be >= 1")
-
-    cur.execute(
-        f"""
-        CREATE TEMP TABLE tmp_normalized_countries ON COMMIT DROP AS
-        SELECT
-            alpha2,
-            MIN(name) AS name,
-            ST_Multi(ST_UnaryUnion(ST_Collect(geom))) AS geom
-        FROM {COUNTRY_TABLE}
-        GROUP BY alpha2
-        """
-    )
-    # tmp_normalized_countries kept materialized: self-joined in the seam build
-    # below and the GIST/alpha2 indexes materially help that self-join.
-    cur.execute(
-        """
-        CREATE INDEX tmp_normalized_countries_alpha2_idx
-        ON tmp_normalized_countries (alpha2)
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX tmp_normalized_countries_geom_idx
-        ON tmp_normalized_countries USING GIST (geom)
-        """
-    )
-    cur.execute("ANALYZE tmp_normalized_countries")
-
-    # Inline the optional country-pair restriction as a VALUES list so the
-    # filter rides along with the seam build rather than a separate temp
-    # table.  Pairs come from `normalize_country_pair`, which already
-    # validates each side as a 2-char alpha-2 code.
-    pair_join_sql: sql.Composable = sql.SQL("")
-    if country_pairs:
-        pair_values = sql.SQL(", ").join(
-            sql.SQL("({}, {})").format(sql.Literal(a), sql.Literal(b))
-            for a, b in sorted(country_pairs)
-        )
-        pair_join_sql = sql.SQL(
-            " JOIN (VALUES {values}) AS p(country_a, country_b)"
-            " ON p.country_a = a.alpha2 AND p.country_b = b.alpha2"
-        ).format(values=pair_values)
-
-    cur.execute(
-        sql.SQL(
-            """
-            CREATE TEMP TABLE tmp_valid_seams ON COMMIT DROP AS
-            WITH seams AS (
-                SELECT
-                    a.alpha2 AS country_a,
-                    b.alpha2 AS country_b,
-                    a.name AS country_name_a,
-                    b.name AS country_name_b,
-                    ST_LineMerge(
-                        ST_UnaryUnion(
-                            ST_CollectionExtract(
-                                ST_Intersection(ST_Boundary(a.geom), ST_Boundary(b.geom)),
-                                2
-                            )
-                        )
-                    ) AS seam_geom
-                FROM tmp_normalized_countries a
-                JOIN tmp_normalized_countries b
-                  ON a.alpha2 < b.alpha2
-                 AND a.geom && b.geom
-                 AND ST_Intersects(a.geom, b.geom)
-                {pair_join}
-            )
-            SELECT
-                *,
-                ST_Length(seam_geom::geography) AS seam_length_m
-            FROM seams
-            WHERE seam_geom IS NOT NULL
-              AND NOT ST_IsEmpty(seam_geom)
-              AND ST_Length(seam_geom::geography) >= {min_seam_length}
-            """
-        ).format(
-            pair_join=pair_join_sql,
-            min_seam_length=sql.Literal(MIN_SEAM_LENGTH_M),
-        )
-    )
-    # tmp_valid_seams kept materialized: read again later by
-    # generate_seam_probe_rows on the same connection, so the seam build
-    # cost is amortized across both stages.
-    cur.execute(
-        """
-        CREATE INDEX tmp_valid_seams_pair_idx
-        ON tmp_valid_seams (country_a, country_b)
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX tmp_valid_seams_geom_idx
-        ON tmp_valid_seams USING GIST (seam_geom)
-        """
-    )
-    cur.execute("ANALYZE tmp_valid_seams")
-
-    cur.execute(
-        f"""
-        CREATE TEMP TABLE tmp_seam_cities_a ON COMMIT DROP AS
-        SELECT
-            s.country_a,
-            s.country_b,
-            s.country_name_a,
-            s.country_name_b,
-            s.seam_length_m,
-            g.city,
-            g.lat,
-            g.lon,
-            g.geom
-        FROM tmp_valid_seams s
-        JOIN geocoding g
-          ON g.country = s.country_a
-         AND g.geom && ST_Expand(s.seam_geom, {SEAM_BBOX_DEG})
-         AND ST_DWithin(g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M})
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX tmp_seam_cities_a_pair_idx
-        ON tmp_seam_cities_a (country_a, country_b)
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX tmp_seam_cities_a_geom_idx
-        ON tmp_seam_cities_a USING GIST (geom)
-        """
-    )
-    cur.execute("ANALYZE tmp_seam_cities_a")
-
-    cur.execute(
-        f"""
-        CREATE TEMP TABLE tmp_seam_cities_b ON COMMIT DROP AS
-        SELECT
-            s.country_a,
-            s.country_b,
-            g.city,
-            g.lat,
-            g.lon,
-            g.geom
-        FROM tmp_valid_seams s
-        JOIN geocoding g
-          ON g.country = s.country_b
-         AND g.geom && ST_Expand(s.seam_geom, {SEAM_BBOX_DEG})
-         AND ST_DWithin(g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M})
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX tmp_seam_cities_b_pair_idx
-        ON tmp_seam_cities_b (country_a, country_b)
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX tmp_seam_cities_b_geom_idx
-        ON tmp_seam_cities_b USING GIST (geom)
-        """
-    )
-    cur.execute("ANALYZE tmp_seam_cities_b")
-
-    cur.execute("DROP TABLE IF EXISTS tmp_discovered_border_city_pairs")
-    cur.execute(
-        f"""
-        CREATE TEMP TABLE tmp_discovered_border_city_pairs ON COMMIT DROP AS
-        WITH candidate_pairs AS (
-            SELECT DISTINCT
-                a.country_a,
-                a.country_b,
-                a.country_name_a,
-                a.country_name_b,
-                a.seam_length_m,
-                a.city AS city_a,
-                b.city AS city_b,
-                a.lat AS lat_a,
-                a.lon AS lon_a,
-                b.lat AS lat_b,
-                b.lon AS lon_b,
-                a.geom AS geom_a,
-                b.geom AS geom_b,
-                ST_Distance(a.geom::geography, b.geom::geography) AS distance_m
-            FROM tmp_seam_cities_a a
-            JOIN LATERAL (
-                SELECT
-                    b.city,
-                    b.lat,
-                    b.lon,
-                    b.geom
-                FROM tmp_seam_cities_b b
-                WHERE b.country_a = a.country_a
-                  AND b.country_b = a.country_b
-                  AND b.geom && ST_Expand(a.geom, {PAIR_BBOX_DEG})
-                  AND ST_DWithin(a.geom::geography, b.geom::geography, {PAIR_RADIUS_M})
-                ORDER BY b.geom <-> a.geom
-                LIMIT {NEAREST_CANDIDATES_PER_CITY}
-            ) b ON TRUE
-        ),
-        ranked_pairs AS (
-            SELECT
-                *,
-                ROW_NUMBER() OVER (
-                    PARTITION BY country_a, country_b
-                    ORDER BY distance_m, city_a, city_b
-                ) AS rn
-            FROM candidate_pairs
-        )
-        SELECT
-            country_a || '/' || country_b AS pair,
-            country_a,
-            country_b,
-            country_name_a,
-            country_name_b,
-            city_a,
-            city_b,
-            lat_a,
-            lon_a,
-            lat_b,
-            lon_b,
-            geom_a,
-            geom_b,
-            distance_m,
-            seam_length_m
-        FROM ranked_pairs
-        WHERE rn <= {max_pairs_per_country_pair}
-        """
-    )
-    cur.execute(
-        """
-        CREATE INDEX tmp_discovered_border_city_pairs_pair_idx
-        ON tmp_discovered_border_city_pairs (country_a, country_b)
-        """
-    )
-    cur.execute("ANALYZE tmp_discovered_border_city_pairs")
-
-    cur.execute(
-        """
-        SELECT
-            pair,
-            country_a,
-            country_b,
-            country_name_a,
-            country_name_b,
-            city_a,
-            city_b,
-            lat_a,
-            lon_a,
-            lat_b,
-            lon_b,
-            ROUND(distance_m::numeric, 1) AS distance_m,
-            ROUND(seam_length_m::numeric, 1) AS seam_length_m
-        FROM tmp_discovered_border_city_pairs
-        ORDER BY country_a, country_b, distance_m, city_a, city_b
-        """
-    )
-    return cur.fetchall()
-
-
-def generate_seam_probe_rows(
-    cur: psycopg.Cursor,
-    *,
-    oracle: CountryOracleRef,
-    ring_distances_m: Iterable[int] = PROBE_RING_DISTANCES_M,
-) -> list[tuple]:
-    """Generate seam-relative inward probe rows from discovered seed pairs.
-
-    `discover_border_city_pairs` must have been called first on the same
-    connection so the temporary seam and selected-pair tables exist.
-    """
-    distances = sorted({int(distance) for distance in ring_distances_m})
-    if not distances or distances[0] <= 0:
-        raise ValueError("ring_distances_m must contain positive distances")
-
-    # Inline the ring distances as a VALUES list rather than a scratch
-    # table.  The CROSS JOIN consumes them exactly once and the final
-    # SELECT orders by ring_distance_m, so row order is independent of the
-    # VALUES order.
-    ring_distance_values = sql.SQL(", ").join(
-        sql.SQL("({})").format(sql.Literal(distance)) for distance in distances
-    )
-
-    cur.execute(
-        sql.SQL(
-            """
-            WITH source_seeds AS (
-                SELECT
-                    ROW_NUMBER() OVER (
-                        ORDER BY pair, distance_m, city_a, city_b, country_a
-                    ) * 2 - 1 AS seed_id,
-                    pair,
-                    country_a AS source_country,
-                    country_b AS neighbor_country,
-                    city_a AS source_city,
-                    lat_a AS source_lat,
-                    lon_a AS source_lon,
-                    city_b AS neighbor_city,
-                    lat_b AS neighbor_lat,
-                    lon_b AS neighbor_lon,
-                    geom_a AS source_geom,
-                    geom_b AS neighbor_geom
-                FROM tmp_discovered_border_city_pairs
-                UNION ALL
-                SELECT
-                    ROW_NUMBER() OVER (
-                        ORDER BY pair, distance_m, city_a, city_b, country_b
-                    ) * 2 AS seed_id,
-                    pair,
-                    country_b AS source_country,
-                    country_a AS neighbor_country,
-                    city_b AS source_city,
-                    lat_b AS source_lat,
-                    lon_b AS source_lon,
-                    city_a AS neighbor_city,
-                    lat_a AS neighbor_lat,
-                    lon_a AS neighbor_lon,
-                    geom_b AS source_geom,
-                    geom_a AS neighbor_geom
-                FROM tmp_discovered_border_city_pairs
-            ),
-            seam_anchors AS (
-                SELECT
-                    seed.*,
-                    ST_ClosestPoint(seam.seam_geom, seed.source_geom) AS seam_geom,
-                    ST_Azimuth(
-                        ST_ClosestPoint(seam.seam_geom, seed.source_geom),
-                        seed.source_geom
-                    ) AS source_normal
-                FROM source_seeds seed
-                JOIN tmp_valid_seams seam
-                  ON seam.country_a = LEAST(seed.source_country, seed.neighbor_country)
-                 AND seam.country_b = GREATEST(
-                     seed.source_country,
-                     seed.neighbor_country
-                 )
-            ),
-            candidates AS (
-                SELECT
-                    anchor.*,
-                    distances.distance_m AS ring_distance_m,
-                    direction.direction_index,
-                    CASE
-                        WHEN anchor.source_normal IS NULL THEN NULL
-                        ELSE ST_Project(
-                            anchor.seam_geom::geography,
-                            distances.distance_m::double precision,
-                            anchor.source_normal + direction.bearing_delta
-                        )::geometry
-                    END AS candidate_geom
-                FROM seam_anchors anchor
-                CROSS JOIN (VALUES {ring_distances}) AS distances(distance_m)
-                CROSS JOIN (VALUES (0, 0.0), (1, pi())) AS direction(
-                    direction_index, bearing_delta
-                )
-            ),
-            classified_candidates AS (
-                SELECT
-                    candidate.*,
-                    EXISTS (
-                        SELECT 1
-                        FROM {oracle} source_country
-                        WHERE source_country.alpha2 = candidate.source_country
-                          AND candidate.candidate_geom IS NOT NULL
-                          AND ST_Covers(source_country.geom, candidate.candidate_geom)
-                    ) AS covers_source
-                FROM candidates candidate
-            ),
-            classified_rows AS (
-                SELECT
-                    candidate.seed_id,
-                    candidate.pair,
-                    candidate.source_country,
-                    candidate.neighbor_country,
-                    candidate.source_city,
-                    candidate.source_lat,
-                    candidate.source_lon,
-                    candidate.neighbor_city,
-                    candidate.neighbor_lat,
-                    candidate.neighbor_lon,
-                    candidate.seam_geom,
-                    candidate.ring_distance_m,
-                    COUNT(*) FILTER (
-                        WHERE candidate.covers_source
-                    ) AS source_cover_count,
-                    (ARRAY_AGG(
-                        candidate.candidate_geom
-                        ORDER BY candidate.direction_index
-                    ) FILTER (WHERE candidate.covers_source))[1] AS accepted_probe_geom
-                FROM classified_candidates candidate
-                GROUP BY
-                    candidate.seed_id,
-                    candidate.pair,
-                    candidate.source_country,
-                    candidate.neighbor_country,
-                    candidate.source_city,
-                    candidate.source_lat,
-                    candidate.source_lon,
-                    candidate.neighbor_city,
-                    candidate.neighbor_lat,
-                    candidate.neighbor_lon,
-                    candidate.seam_geom,
-                    candidate.ring_distance_m
-            )
-            SELECT
-                row.pair,
-                row.source_country,
-                oracle_country.alpha2 AS expected_alpha2,
-                oracle_country.alpha3 AS expected_alpha3,
-                oracle_country.name AS expected_country_name,
-                row.neighbor_country,
-                row.source_city,
-                ROUND(row.source_lat::numeric, 7) AS source_lat,
-                ROUND(row.source_lon::numeric, 7) AS source_lon,
-                row.neighbor_city,
-                ROUND(row.neighbor_lat::numeric, 7) AS neighbor_lat,
-                ROUND(row.neighbor_lon::numeric, 7) AS neighbor_lon,
-                ROUND(ST_Y(row.seam_geom)::numeric, 7) AS seam_lat,
-                ROUND(ST_X(row.seam_geom)::numeric, 7) AS seam_lon,
-                row.ring_distance_m,
-                CASE
-                    WHEN row.source_cover_count = 1 THEN
-                        ROUND(ST_Y(row.accepted_probe_geom)::numeric, 7)
-                    ELSE NULL
-                END AS probe_lat,
-                CASE
-                    WHEN row.source_cover_count = 1 THEN
-                        ROUND(ST_X(row.accepted_probe_geom)::numeric, 7)
-                    ELSE NULL
-                END AS probe_lon,
-                CASE
-                    WHEN row.source_cover_count = 1 THEN 'ok'
-                    WHEN row.source_cover_count > 1 THEN 'ambiguous'
-                    ELSE 'unplaceable'
-                END AS status
-            FROM classified_rows row
-            JOIN {oracle} oracle_country
-              ON oracle_country.alpha2 = row.source_country
-            ORDER BY
-                row.pair,
-                row.source_country,
-                row.source_city,
-                row.source_lat,
-                row.source_lon,
-                row.neighbor_country,
-                row.neighbor_city,
-                row.neighbor_lat,
-                row.neighbor_lon,
-                ST_Y(row.seam_geom),
-                ST_X(row.seam_geom),
-                row.ring_distance_m
-            """
-        ).format(
-            oracle=sql.Identifier(oracle.schema, oracle.table),
-            ring_distances=ring_distance_values,
-        )
-    )
-    return cur.fetchall()
 
 
 def write_probe_rows(output: Path, rows: list[tuple]) -> None:
