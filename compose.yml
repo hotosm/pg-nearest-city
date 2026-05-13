@@ -148,6 +148,8 @@ services:
       - ./cache:/data/cache
       # Output directory for the discovered border-city pair CSV
       - ./output:/data/output
+      # Committed fixture area for the canonical generated border probe CSV
+      - ./tests:/data/tests
     networks:
       - net
     environment:
