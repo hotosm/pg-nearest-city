@@ -12,6 +12,7 @@ from typing import Iterable, Iterator, Mapping
 
 import psycopg
 from psycopg import sql
+from psycopg.rows import dict_row
 
 from pg_nearest_city.datasets.types import BoundarySource
 from pg_nearest_city.db.settings import DBConnSettings
@@ -136,6 +137,29 @@ class PairSummary:
     pair: str
     discovered_rows: int
     status_counts: Mapping[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _DiscoveredPair:
+    """Named internal pair-discovery row.
+
+    Not a public output of the module; only feeds probe-row generation and
+    summary derivation inside `_build_result`.
+    """
+
+    pair: str
+    country_a: str
+    country_b: str
+    country_name_a: str
+    country_name_b: str
+    city_a: str
+    city_b: str
+    lat_a: object
+    lon_a: object
+    lat_b: object
+    lon_b: object
+    distance_m: object
+    seam_length_m: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,13 +507,12 @@ class BorderFixtureGenerator:
                     country_pairs=country_pairs or None,
                     max_pairs_per_country_pair=req.max_pairs_per_country_pair,
                 )
-                raw_probe_rows = self._generate_seam_probe_rows(
+                probe_rows = self._generate_seam_probe_rows(
                     cur,
                     oracle=oracle,
                     ring_distances_m=req.ring_distances_m,
                 )
 
-        probe_rows = [_probe_row_from_tuple(row) for row in raw_probe_rows]
         return _build_result(
             requested_country_pairs=frozenset(req.country_pairs),
             pair_rows=pair_rows,
@@ -502,7 +525,7 @@ class BorderFixtureGenerator:
         *,
         country_pairs: set[CountryPair] | None = None,
         max_pairs_per_country_pair: int = MAX_PAIRS_PER_COUNTRY_PAIR,
-    ) -> list[tuple]:
+    ) -> list[_DiscoveredPair]:
         """Discover nearby cross-border city pairs using runtime-country seams."""
         if max_pairs_per_country_pair < 1:
             raise ValueError("max_pairs_per_country_pair must be >= 1")
@@ -742,27 +765,28 @@ class BorderFixtureGenerator:
         )
         cur.execute("ANALYZE tmp_discovered_border_city_pairs")
 
-        cur.execute(
-            """
-            SELECT
-                pair,
-                country_a,
-                country_b,
-                country_name_a,
-                country_name_b,
-                city_a,
-                city_b,
-                lat_a,
-                lon_a,
-                lat_b,
-                lon_b,
-                ROUND(distance_m::numeric, 1) AS distance_m,
-                ROUND(seam_length_m::numeric, 1) AS seam_length_m
-            FROM tmp_discovered_border_city_pairs
-            ORDER BY country_a, country_b, distance_m, city_a, city_b
-            """
-        )
-        return cur.fetchall()
+        with cur.connection.cursor(row_factory=dict_row) as named_cur:
+            named_cur.execute(
+                """
+                SELECT
+                    pair,
+                    country_a,
+                    country_b,
+                    country_name_a,
+                    country_name_b,
+                    city_a,
+                    city_b,
+                    lat_a,
+                    lon_a,
+                    lat_b,
+                    lon_b,
+                    ROUND(distance_m::numeric, 1) AS distance_m,
+                    ROUND(seam_length_m::numeric, 1) AS seam_length_m
+                FROM tmp_discovered_border_city_pairs
+                ORDER BY country_a, country_b, distance_m, city_a, city_b
+                """
+            )
+            return [_DiscoveredPair(**row) for row in named_cur]
 
     def _generate_seam_probe_rows(
         self,
@@ -770,7 +794,7 @@ class BorderFixtureGenerator:
         *,
         oracle: CountryOracleRef,
         ring_distances_m: Iterable[int] = PROBE_RING_DISTANCES_M,
-    ) -> list[tuple]:
+    ) -> list[ProbeRow]:
         """Generate seam-relative inward probe rows from discovered seed pairs.
 
         `_discover_border_city_pairs` must have been called first on the same
@@ -788,9 +812,8 @@ class BorderFixtureGenerator:
             sql.SQL("({})").format(sql.Literal(distance)) for distance in distances
         )
 
-        cur.execute(
-            sql.SQL(
-                """
+        probe_select = sql.SQL(
+            """
                 WITH source_seeds AS (
                     SELECT
                         ROW_NUMBER() OVER (
@@ -957,46 +980,24 @@ class BorderFixtureGenerator:
                     ST_X(row.seam_geom),
                     row.ring_distance_m
                 """
-            ).format(
-                oracle=sql.Identifier(oracle.schema, oracle.table),
-                ring_distances=ring_distance_values,
-            )
+        ).format(
+            oracle=sql.Identifier(oracle.schema, oracle.table),
+            ring_distances=ring_distance_values,
         )
-        return cur.fetchall()
 
-
-def _probe_row_from_tuple(row: tuple) -> ProbeRow:
-    """Adapt a raw cursor tuple from `generate_seam_probe_rows` into `ProbeRow`."""
-    return ProbeRow(
-        pair=row[0],
-        source_country=row[1],
-        expected_alpha2=row[2],
-        expected_alpha3=row[3],
-        expected_country_name=row[4],
-        neighbor_country=row[5],
-        source_city=row[6],
-        source_lat=row[7],
-        source_lon=row[8],
-        neighbor_city=row[9],
-        neighbor_lat=row[10],
-        neighbor_lon=row[11],
-        seam_lat=row[12],
-        seam_lon=row[13],
-        ring_distance_m=row[14],
-        probe_lat=row[15],
-        probe_lon=row[16],
-        status=row[17],
-    )
+        with cur.connection.cursor(row_factory=dict_row) as named_cur:
+            named_cur.execute(probe_select)
+            return [ProbeRow(**row) for row in named_cur]
 
 
 def _build_result(
     *,
     requested_country_pairs: frozenset[CountryPair],
-    pair_rows: list[tuple],
+    pair_rows: list[_DiscoveredPair],
     probe_rows: list[ProbeRow],
 ) -> BorderFixtureResult:
     """Derive named summary data from the internal pair/probe row sequences."""
-    discovered_counts: Counter[str] = Counter(str(row[0]) for row in pair_rows)
+    discovered_counts: Counter[str] = Counter(pair.pair for pair in pair_rows)
     status_counts_by_pair: dict[str, Counter[str]] = {}
     for probe in probe_rows:
         status_counts_by_pair.setdefault(probe.pair, Counter())[probe.status] += 1
