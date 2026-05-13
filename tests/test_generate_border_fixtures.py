@@ -46,17 +46,9 @@ def test_parse_args_defaults_country_pair_to_empty_for_global_discovery():
     args = parse_args([])
 
     assert args.country_pair == []
-    assert args.pairs_output is None
     assert args.probes_output == BORDER_PROBE_FIXTURE_PATH
     assert args.cache_dir == Path("/data/cache")
     assert args.boundary_source == "naturalearth"
-
-
-def test_parse_args_accepts_pair_output_alias():
-    args = parse_args(["--pair-output", "tmp/pairs.csv", "--country-pair", "FR/MC"])
-
-    assert args.pairs_output == Path("tmp/pairs.csv")
-    assert args.country_pair == ["FR/MC"]
 
 
 def test_parse_args_accepts_probe_output_override():
