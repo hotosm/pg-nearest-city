@@ -627,76 +627,45 @@ class BorderFixtureGenerator:
         )
         cur.execute("ANALYZE tmp_valid_seams")
 
-        cur.execute(
-            f"""
-            CREATE TEMP TABLE tmp_seam_cities_a ON COMMIT DROP AS
-            SELECT
-                s.country_a,
-                s.country_b,
-                s.country_name_a,
-                s.country_name_b,
-                s.seam_length_m,
-                g.city,
-                g.lat,
-                g.lon,
-                g.geom
-            FROM tmp_valid_seams s
-            JOIN geocoding g
-              ON g.country = s.country_a
-             AND g.geom && ST_Expand(s.seam_geom, {SEAM_BBOX_DEG})
-             AND ST_DWithin(g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M})
-            """
-        )
-        cur.execute(
-            """
-            CREATE INDEX tmp_seam_cities_a_pair_idx
-            ON tmp_seam_cities_a (country_a, country_b)
-            """
-        )
-        cur.execute(
-            """
-            CREATE INDEX tmp_seam_cities_a_geom_idx
-            ON tmp_seam_cities_a USING GIST (geom)
-            """
-        )
-        cur.execute("ANALYZE tmp_seam_cities_a")
-
-        cur.execute(
-            f"""
-            CREATE TEMP TABLE tmp_seam_cities_b ON COMMIT DROP AS
-            SELECT
-                s.country_a,
-                s.country_b,
-                g.city,
-                g.lat,
-                g.lon,
-                g.geom
-            FROM tmp_valid_seams s
-            JOIN geocoding g
-              ON g.country = s.country_b
-             AND g.geom && ST_Expand(s.seam_geom, {SEAM_BBOX_DEG})
-             AND ST_DWithin(g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M})
-            """
-        )
-        cur.execute(
-            """
-            CREATE INDEX tmp_seam_cities_b_pair_idx
-            ON tmp_seam_cities_b (country_a, country_b)
-            """
-        )
-        cur.execute(
-            """
-            CREATE INDEX tmp_seam_cities_b_geom_idx
-            ON tmp_seam_cities_b USING GIST (geom)
-            """
-        )
-        cur.execute("ANALYZE tmp_seam_cities_b")
-
         cur.execute("DROP TABLE IF EXISTS tmp_discovered_border_city_pairs")
+        # tmp_discovered_border_city_pairs kept materialized: probe generation
+        # reads it three times (seed CTE plus both halves of the UNION ALL),
+        # so inlining would force the candidate set to be recomputed.
         cur.execute(
             f"""
             CREATE TEMP TABLE tmp_discovered_border_city_pairs ON COMMIT DROP AS
-            WITH candidate_pairs AS (
+            WITH seam_cities_a AS (
+                SELECT
+                    s.country_a,
+                    s.country_b,
+                    s.country_name_a,
+                    s.country_name_b,
+                    s.seam_length_m,
+                    g.city,
+                    g.lat,
+                    g.lon,
+                    g.geom
+                FROM tmp_valid_seams s
+                JOIN geocoding g
+                  ON g.country = s.country_a
+                 AND g.geom && ST_Expand(s.seam_geom, {SEAM_BBOX_DEG})
+                 AND ST_DWithin(g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M})
+            ),
+            seam_cities_b AS (
+                SELECT
+                    s.country_a,
+                    s.country_b,
+                    g.city,
+                    g.lat,
+                    g.lon,
+                    g.geom
+                FROM tmp_valid_seams s
+                JOIN geocoding g
+                  ON g.country = s.country_b
+                 AND g.geom && ST_Expand(s.seam_geom, {SEAM_BBOX_DEG})
+                 AND ST_DWithin(g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M})
+            ),
+            candidate_pairs AS (
                 SELECT DISTINCT
                     a.country_a,
                     a.country_b,
@@ -712,14 +681,14 @@ class BorderFixtureGenerator:
                     a.geom AS geom_a,
                     b.geom AS geom_b,
                     ST_Distance(a.geom::geography, b.geom::geography) AS distance_m
-                FROM tmp_seam_cities_a a
+                FROM seam_cities_a a
                 JOIN LATERAL (
                     SELECT
                         b.city,
                         b.lat,
                         b.lon,
                         b.geom
-                    FROM tmp_seam_cities_b b
+                    FROM seam_cities_b b
                     WHERE b.country_a = a.country_a
                       AND b.country_b = a.country_b
                       AND b.geom && ST_Expand(a.geom, {PAIR_BBOX_DEG})
