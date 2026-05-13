@@ -27,6 +27,7 @@ MIN_SEAM_LENGTH_M = 1_000
 NEAREST_CANDIDATES_PER_CITY = 32
 PROBE_RING_DISTANCES_M = (100, 500, 1000)
 PROBE_STATUSES = ("ok", "ambiguous", "unplaceable")
+BORDER_PROBE_FIXTURE_PATH = Path("tests/fixtures/border_country_probes.csv")
 
 # Cheap geometry prefilters before exact geography distance checks.
 SEAM_BBOX_DEG = 0.25
@@ -113,7 +114,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--probes-output",
         type=Path,
-        help="Optional CSV path for inspecting generated seam-relative probe rows",
+        default=BORDER_PROBE_FIXTURE_PATH,
+        help=(
+            "CSV path for the canonical generated seam-relative probe fixture "
+            f"(default: {BORDER_PROBE_FIXTURE_PATH})"
+        ),
     )
     parser.add_argument(
         "--max-pairs-per-country-pair",
@@ -922,8 +927,14 @@ def generate_seam_probe_rows(
                 row.pair,
                 row.source_country,
                 row.source_city,
+                row.source_lat,
+                row.source_lon,
                 row.neighbor_country,
                 row.neighbor_city,
+                row.neighbor_lat,
+                row.neighbor_lon,
+                ST_Y(row.seam_geom),
+                ST_X(row.seam_geom),
                 row.ring_distance_m
             """
         ).format(oracle=sql.Identifier(oracle.schema, oracle.table))
@@ -1014,11 +1025,8 @@ def main() -> None:
     else:
         print(f"discovered {len(rows)} pairs; pass --pairs-output to write CSV")
 
-    if args.probes_output is not None:
-        write_probe_rows(args.probes_output, probe_rows)
-        print(f"wrote {len(probe_rows)} probes to {args.probes_output}")
-    else:
-        print(f"generated {len(probe_rows)} probes; pass --probes-output to write CSV")
+    write_probe_rows(args.probes_output, probe_rows)
+    print(f"wrote {len(probe_rows)} probes to {args.probes_output}")
 
 
 if __name__ == "__main__":
