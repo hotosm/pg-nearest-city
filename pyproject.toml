@@ -32,7 +32,6 @@ repository = "https://github.com/hotosm/pg-nearest-city"
 [project.scripts]
 build-sync = "unasync:main"
 pgnearest-load = "pg_nearest_city.scripts.load_database:main"
-pgnearest-generate-border-fixtures = "pg_nearest_city.scripts.generate_border_fixtures:main"
 
 [dependency-groups]
 test = [
