@@ -4,11 +4,14 @@ import pytest
 
 from pg_nearest_city.scripts.generate_border_fixtures import (
     CountryOracleRef,
+    count_probe_rows_by_pair_and_status,
     count_rows_by_pair,
+    format_probe_status_summary,
     gdal_pg_conn_string_for_schema,
     make_oracle_schema_name,
     normalize_country_pair,
     normalize_country_pairs,
+    pairs_without_ok_probes,
     pairs_without_rows,
     parse_args,
 )
@@ -41,6 +44,7 @@ def test_parse_args_defaults_country_pair_to_empty_for_global_discovery():
 
     assert args.country_pair == []
     assert args.pairs_output is None
+    assert args.probes_output is None
     assert args.cache_dir == Path("/data/cache")
     assert args.boundary_source == "naturalearth"
 
@@ -70,6 +74,37 @@ def test_pairs_without_rows_reports_required_pairs_with_no_discoveries():
     ]
 
     assert pairs_without_rows(country_pairs, rows) == ["RS/XK"]
+
+
+def test_count_probe_rows_by_pair_and_status_counts_statuses():
+    rows = [
+        ("FR/MC", "FR", "ok"),
+        ("FR/MC", "MC", "ambiguous"),
+        ("FR/MC", "MC", "ambiguous"),
+        ("BD/IN", "BD", "unplaceable"),
+    ]
+
+    assert count_probe_rows_by_pair_and_status(rows) == {
+        "FR/MC": {"ok": 1, "ambiguous": 2},
+        "BD/IN": {"unplaceable": 1},
+    }
+
+
+def test_pairs_without_ok_probes_reports_required_pairs_without_usable_rows():
+    country_pairs = {("BD", "IN"), ("FR", "MC"), ("RS", "XK")}
+    rows = [
+        ("FR/MC", "FR", "ok"),
+        ("BD/IN", "BD", "unplaceable"),
+    ]
+
+    assert pairs_without_ok_probes(country_pairs, rows) == ["BD/IN", "RS/XK"]
+
+
+def test_format_probe_status_summary_uses_stable_status_order():
+    assert (
+        format_probe_status_summary({"unplaceable": 2, "ok": 1})
+        == "ok=1, ambiguous=0, unplaceable=2"
+    )
 
 
 def test_country_oracle_ref_formats_qualified_name():

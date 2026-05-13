@@ -8,7 +8,7 @@ from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Mapping
 
 import psycopg
 from psycopg import sql
@@ -25,6 +25,8 @@ PAIR_RADIUS_M = 10_000
 MAX_PAIRS_PER_COUNTRY_PAIR = 5
 MIN_SEAM_LENGTH_M = 1_000
 NEAREST_CANDIDATES_PER_CITY = 32
+PROBE_RING_DISTANCES_M = (100, 500, 1000)
+PROBE_STATUSES = ("ok", "ambiguous", "unplaceable")
 
 # Cheap geometry prefilters before exact geography distance checks.
 SEAM_BBOX_DEG = 0.25
@@ -44,6 +46,27 @@ CSV_HEADER = [
     "lon_b",
     "distance_m",
     "seam_length_m",
+]
+
+PROBE_CSV_HEADER = [
+    "pair",
+    "source_country",
+    "expected_alpha2",
+    "expected_alpha3",
+    "expected_country_name",
+    "neighbor_country",
+    "source_city",
+    "source_lat",
+    "source_lon",
+    "neighbor_city",
+    "neighbor_lat",
+    "neighbor_lon",
+    "seam_lat",
+    "seam_lon",
+    "ring_distance_m",
+    "probe_lat",
+    "probe_lon",
+    "status",
 ]
 
 CountryPair = tuple[str, str]
@@ -86,6 +109,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="pairs_output",
         type=Path,
         help="Optional CSV path for inspecting discovered border-city pairs",
+    )
+    parser.add_argument(
+        "--probes-output",
+        type=Path,
+        help="Optional CSV path for inspecting generated seam-relative probe rows",
     )
     parser.add_argument(
         "--max-pairs-per-country-pair",
@@ -370,6 +398,28 @@ def count_rows_by_pair(rows: list[tuple]) -> Counter[str]:
     return Counter(str(row[0]) for row in rows)
 
 
+def count_probe_rows_by_pair_and_status(rows: list[tuple]) -> dict[str, Counter[str]]:
+    """Count generated probe rows by pair and auditable row status."""
+    counts: dict[str, Counter[str]] = {}
+    for row in rows:
+        pair = str(row[0])
+        status = str(row[-1])
+        counts.setdefault(pair, Counter())[status] += 1
+    return counts
+
+
+def pairs_without_ok_probes(
+    country_pairs: set[CountryPair], probe_rows: list[tuple]
+) -> list[str]:
+    """Return formatted country pairs with no usable generated probe rows."""
+    counts = count_probe_rows_by_pair_and_status(probe_rows)
+    return [
+        pair
+        for pair in sorted(format_country_pair(pair) for pair in country_pairs)
+        if counts.get(pair, Counter())["ok"] == 0
+    ]
+
+
 def print_pair_summary(country_pairs: set[CountryPair], rows: list[tuple]) -> None:
     """Print a short deterministic discovery summary."""
     counts = count_rows_by_pair(rows)
@@ -383,6 +433,27 @@ def print_discovered_pair_summary(rows: list[tuple]) -> None:
     for pair in sorted(counts):
         print(f"{pair}: {counts[pair]} discovered city pairs")
     print(f"total: {len(counts)} country pairs, {len(rows)} city pairs")
+
+
+def format_probe_status_summary(status_counts: Mapping[str, int]) -> str:
+    """Format status counts in stable status order for generator summaries."""
+    return ", ".join(
+        f"{status}={status_counts.get(status, 0)}" for status in PROBE_STATUSES
+    )
+
+
+def print_probe_summary(
+    pairs: Iterable[str], pair_rows: list[tuple], probe_rows: list[tuple]
+) -> None:
+    """Print per-pair discovery and probe-status counts."""
+    discovered_counts = count_rows_by_pair(pair_rows)
+    status_counts = count_probe_rows_by_pair_and_status(probe_rows)
+    for pair in sorted(pairs):
+        print(
+            f"{pair}: {discovered_counts[pair]} discovered city pairs, "
+            f"{format_probe_status_summary(status_counts.get(pair, Counter()))}"
+        )
+    print(f"total: {len(probe_rows)} probe rows")
 
 
 def pairs_without_rows(country_pairs: set[CountryPair], rows: list[tuple]) -> list[str]:
@@ -568,8 +639,10 @@ def discover_border_city_pairs(
     )
     cur.execute("ANALYZE tmp_seam_cities_b")
 
+    cur.execute("DROP TABLE IF EXISTS tmp_discovered_border_city_pairs")
     cur.execute(
         f"""
+        CREATE TEMP TABLE tmp_discovered_border_city_pairs ON COMMIT DROP AS
         WITH candidate_pairs AS (
             SELECT DISTINCT
                 a.country_a,
@@ -583,6 +656,8 @@ def discover_border_city_pairs(
                 a.lon AS lon_a,
                 b.lat AS lat_b,
                 b.lon AS lon_b,
+                a.geom AS geom_a,
+                b.geom AS geom_b,
                 ST_Distance(a.geom::geography, b.geom::geography) AS distance_m
             FROM tmp_seam_cities_a a
             JOIN LATERAL (
@@ -621,12 +696,237 @@ def discover_border_city_pairs(
             lon_a,
             lat_b,
             lon_b,
-            ROUND(distance_m::numeric, 1) AS distance_m,
-            ROUND(seam_length_m::numeric, 1) AS seam_length_m
+            geom_a,
+            geom_b,
+            distance_m,
+            seam_length_m
         FROM ranked_pairs
         WHERE rn <= {max_pairs_per_country_pair}
-        ORDER BY country_a, country_b, distance_m
         """
+    )
+    cur.execute(
+        """
+        CREATE INDEX tmp_discovered_border_city_pairs_pair_idx
+        ON tmp_discovered_border_city_pairs (country_a, country_b)
+        """
+    )
+    cur.execute("ANALYZE tmp_discovered_border_city_pairs")
+
+    cur.execute(
+        """
+        SELECT
+            pair,
+            country_a,
+            country_b,
+            country_name_a,
+            country_name_b,
+            city_a,
+            city_b,
+            lat_a,
+            lon_a,
+            lat_b,
+            lon_b,
+            ROUND(distance_m::numeric, 1) AS distance_m,
+            ROUND(seam_length_m::numeric, 1) AS seam_length_m
+        FROM tmp_discovered_border_city_pairs
+        ORDER BY country_a, country_b, distance_m, city_a, city_b
+        """
+    )
+    return cur.fetchall()
+
+
+def generate_seam_probe_rows(
+    cur: psycopg.Cursor,
+    *,
+    oracle: CountryOracleRef,
+    ring_distances_m: Iterable[int] = PROBE_RING_DISTANCES_M,
+) -> list[tuple]:
+    """Generate seam-relative inward probe rows from discovered seed pairs.
+
+    `discover_border_city_pairs` must have been called first on the same
+    connection so the temporary seam and selected-pair tables exist.
+    """
+    distances = sorted({int(distance) for distance in ring_distances_m})
+    if not distances or distances[0] <= 0:
+        raise ValueError("ring_distances_m must contain positive distances")
+
+    cur.execute("DROP TABLE IF EXISTS tmp_probe_ring_distances")
+    cur.execute(
+        """
+        CREATE TEMP TABLE tmp_probe_ring_distances (
+            distance_m integer PRIMARY KEY
+        ) ON COMMIT DROP
+        """
+    )
+    cur.executemany(
+        "INSERT INTO tmp_probe_ring_distances (distance_m) VALUES (%s)",
+        [(distance,) for distance in distances],
+    )
+
+    cur.execute(
+        sql.SQL(
+            """
+            WITH source_seeds AS (
+                SELECT
+                    ROW_NUMBER() OVER (
+                        ORDER BY pair, distance_m, city_a, city_b, country_a
+                    ) * 2 - 1 AS seed_id,
+                    pair,
+                    country_a AS source_country,
+                    country_b AS neighbor_country,
+                    city_a AS source_city,
+                    lat_a AS source_lat,
+                    lon_a AS source_lon,
+                    city_b AS neighbor_city,
+                    lat_b AS neighbor_lat,
+                    lon_b AS neighbor_lon,
+                    geom_a AS source_geom,
+                    geom_b AS neighbor_geom
+                FROM tmp_discovered_border_city_pairs
+                UNION ALL
+                SELECT
+                    ROW_NUMBER() OVER (
+                        ORDER BY pair, distance_m, city_a, city_b, country_b
+                    ) * 2 AS seed_id,
+                    pair,
+                    country_b AS source_country,
+                    country_a AS neighbor_country,
+                    city_b AS source_city,
+                    lat_b AS source_lat,
+                    lon_b AS source_lon,
+                    city_a AS neighbor_city,
+                    lat_a AS neighbor_lat,
+                    lon_a AS neighbor_lon,
+                    geom_b AS source_geom,
+                    geom_a AS neighbor_geom
+                FROM tmp_discovered_border_city_pairs
+            ),
+            seam_anchors AS (
+                SELECT
+                    seed.*,
+                    ST_ClosestPoint(seam.seam_geom, seed.source_geom) AS seam_geom,
+                    ST_Azimuth(
+                        ST_ClosestPoint(seam.seam_geom, seed.source_geom),
+                        seed.source_geom
+                    ) AS source_normal
+                FROM source_seeds seed
+                JOIN tmp_valid_seams seam
+                  ON seam.country_a = LEAST(seed.source_country, seed.neighbor_country)
+                 AND seam.country_b = GREATEST(
+                     seed.source_country,
+                     seed.neighbor_country
+                 )
+            ),
+            candidates AS (
+                SELECT
+                    anchor.*,
+                    distances.distance_m AS ring_distance_m,
+                    direction.direction_index,
+                    CASE
+                        WHEN anchor.source_normal IS NULL THEN NULL
+                        ELSE ST_Project(
+                            anchor.seam_geom::geography,
+                            distances.distance_m::double precision,
+                            anchor.source_normal + direction.bearing_delta
+                        )::geometry
+                    END AS candidate_geom
+                FROM seam_anchors anchor
+                CROSS JOIN tmp_probe_ring_distances distances
+                CROSS JOIN (VALUES (0, 0.0), (1, pi())) AS direction(
+                    direction_index, bearing_delta
+                )
+            ),
+            classified_candidates AS (
+                SELECT
+                    candidate.*,
+                    EXISTS (
+                        SELECT 1
+                        FROM {oracle} source_country
+                        WHERE source_country.alpha2 = candidate.source_country
+                          AND candidate.candidate_geom IS NOT NULL
+                          AND ST_Covers(source_country.geom, candidate.candidate_geom)
+                    ) AS covers_source
+                FROM candidates candidate
+            ),
+            classified_rows AS (
+                SELECT
+                    candidate.seed_id,
+                    candidate.pair,
+                    candidate.source_country,
+                    candidate.neighbor_country,
+                    candidate.source_city,
+                    candidate.source_lat,
+                    candidate.source_lon,
+                    candidate.neighbor_city,
+                    candidate.neighbor_lat,
+                    candidate.neighbor_lon,
+                    candidate.seam_geom,
+                    candidate.ring_distance_m,
+                    COUNT(*) FILTER (
+                        WHERE candidate.covers_source
+                    ) AS source_cover_count,
+                    (ARRAY_AGG(
+                        candidate.candidate_geom
+                        ORDER BY candidate.direction_index
+                    ) FILTER (WHERE candidate.covers_source))[1] AS accepted_probe_geom
+                FROM classified_candidates candidate
+                GROUP BY
+                    candidate.seed_id,
+                    candidate.pair,
+                    candidate.source_country,
+                    candidate.neighbor_country,
+                    candidate.source_city,
+                    candidate.source_lat,
+                    candidate.source_lon,
+                    candidate.neighbor_city,
+                    candidate.neighbor_lat,
+                    candidate.neighbor_lon,
+                    candidate.seam_geom,
+                    candidate.ring_distance_m
+            )
+            SELECT
+                row.pair,
+                row.source_country,
+                oracle_country.alpha2 AS expected_alpha2,
+                oracle_country.alpha3 AS expected_alpha3,
+                oracle_country.name AS expected_country_name,
+                row.neighbor_country,
+                row.source_city,
+                ROUND(row.source_lat::numeric, 7) AS source_lat,
+                ROUND(row.source_lon::numeric, 7) AS source_lon,
+                row.neighbor_city,
+                ROUND(row.neighbor_lat::numeric, 7) AS neighbor_lat,
+                ROUND(row.neighbor_lon::numeric, 7) AS neighbor_lon,
+                ROUND(ST_Y(row.seam_geom)::numeric, 7) AS seam_lat,
+                ROUND(ST_X(row.seam_geom)::numeric, 7) AS seam_lon,
+                row.ring_distance_m,
+                CASE
+                    WHEN row.source_cover_count = 1 THEN
+                        ROUND(ST_Y(row.accepted_probe_geom)::numeric, 7)
+                    ELSE NULL
+                END AS probe_lat,
+                CASE
+                    WHEN row.source_cover_count = 1 THEN
+                        ROUND(ST_X(row.accepted_probe_geom)::numeric, 7)
+                    ELSE NULL
+                END AS probe_lon,
+                CASE
+                    WHEN row.source_cover_count = 1 THEN 'ok'
+                    WHEN row.source_cover_count > 1 THEN 'ambiguous'
+                    ELSE 'unplaceable'
+                END AS status
+            FROM classified_rows row
+            JOIN {oracle} oracle_country
+              ON oracle_country.alpha2 = row.source_country
+            ORDER BY
+                row.pair,
+                row.source_country,
+                row.source_city,
+                row.neighbor_country,
+                row.neighbor_city,
+                row.ring_distance_m
+            """
+        ).format(oracle=sql.Identifier(oracle.schema, oracle.table))
     )
     return cur.fetchall()
 
@@ -637,6 +937,15 @@ def write_pair_rows(output: Path, rows: list[tuple]) -> None:
     with output.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh, lineterminator="\n")
         writer.writerow(CSV_HEADER)
+        writer.writerows(rows)
+
+
+def write_probe_rows(output: Path, rows: list[tuple]) -> None:
+    """Write generated seam-relative probe rows to a CSV file."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh, lineterminator="\n")
+        writer.writerow(PROBE_CSV_HEADER)
         writer.writerows(rows)
 
 
@@ -659,6 +968,7 @@ def main() -> None:
 
     conn_settings = DBConnSettings()
     boundary_source = BoundarySource(args.boundary_source)
+    probe_rows: list[tuple] = []
     try:
         with corrected_country_oracle(
             conn_settings=conn_settings,
@@ -675,25 +985,40 @@ def main() -> None:
                     country_pairs=country_pairs or None,
                     max_pairs_per_country_pair=args.max_pairs_per_country_pair,
                 )
+                probe_rows = generate_seam_probe_rows(cur, oracle=oracle)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
 
     if country_pairs:
-        print_pair_summary(country_pairs, rows)
+        summary_pairs = [format_country_pair(pair) for pair in country_pairs]
+        print_probe_summary(summary_pairs, rows, probe_rows)
         missing_pairs = pairs_without_rows(country_pairs, rows)
         if missing_pairs:
             raise SystemExit(
                 "no discovered city pairs for required country pairs: "
                 + ", ".join(missing_pairs)
             )
+        missing_ok_pairs = pairs_without_ok_probes(country_pairs, probe_rows)
+        if missing_ok_pairs:
+            raise SystemExit(
+                "no usable seam probe rows for required country pairs: "
+                + ", ".join(missing_ok_pairs)
+            )
     else:
         print_discovered_pair_summary(rows)
+        print_probe_summary(count_rows_by_pair(rows).keys(), rows, probe_rows)
 
     if args.pairs_output is not None:
         write_pair_rows(args.pairs_output, rows)
         print(f"wrote {len(rows)} pairs to {args.pairs_output}")
     else:
         print(f"discovered {len(rows)} pairs; pass --pairs-output to write CSV")
+
+    if args.probes_output is not None:
+        write_probe_rows(args.probes_output, probe_rows)
+        print(f"wrote {len(probe_rows)} probes to {args.probes_output}")
+    else:
+        print(f"generated {len(probe_rows)} probes; pass --probes-output to write CSV")
 
 
 if __name__ == "__main__":
