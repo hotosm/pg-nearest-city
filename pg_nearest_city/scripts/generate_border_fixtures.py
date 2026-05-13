@@ -2,16 +2,24 @@
 
 import argparse
 import csv
+import logging
+import os
 from collections import Counter
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import psycopg
+from psycopg import sql
 
+from pg_nearest_city.datasets.types import BoundarySource
 from pg_nearest_city.db.settings import DBConnSettings
 
 
 COUNTRY_TABLE = "country"
+ORACLE_TABLE = "border_country_oracle"
+ORACLE_SCHEMA_PREFIX = "tmp_border_oracle"
 SEAM_RADIUS_M = 20_000
 PAIR_RADIUS_M = 10_000
 MAX_PAIRS_PER_COUNTRY_PAIR = 5
@@ -41,10 +49,35 @@ CSV_HEADER = [
 CountryPair = tuple[str, str]
 
 
+@dataclass(frozen=True, slots=True)
+class CountryOracleRef:
+    """Reference to the disposable corrected pre-simplification oracle table."""
+
+    schema: str
+    table: str = ORACLE_TABLE
+
+    @property
+    def qualified_name(self) -> str:
+        """Return a human-readable qualified table name."""
+        return f"{self.schema}.{self.table}"
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse border fixture generator arguments."""
     parser = argparse.ArgumentParser(
         description="Regenerate offline border fixture seeds from runtime seams."
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path("/data/cache"),
+        help="Directory containing cached source datasets and dataset_registry.json",
+    )
+    parser.add_argument(
+        "--boundary-source",
+        choices=[s.value for s in BoundarySource],
+        default=BoundarySource.NATURAL_EARTH.value,
+        help="Boundary source to use when rebuilding the pre-simplification oracle",
     )
     parser.add_argument(
         "--pairs-output",
@@ -70,6 +103,247 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     return parser.parse_args(argv)
+
+
+def _quote_gdal_pg_value(value: object) -> str:
+    """Quote a value for a GDAL PostgreSQL keyword connection string."""
+    escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
+def gdal_pg_conn_string_for_schema(
+    settings: DBConnSettings, schema: str
+) -> str:
+    """Build a GDAL PostgreSQL connection string scoped to a scratch schema."""
+    parts = {
+        "host": settings.host,
+        "port": settings.port,
+        "dbname": settings.name,
+        "user": settings.user,
+        "password": settings.password,
+        "active_schema": schema,
+    }
+    return " ".join(
+        f"{key}={_quote_gdal_pg_value(value)}" for key, value in parts.items()
+    )
+
+
+def make_oracle_schema_name(prefix: str = ORACLE_SCHEMA_PREFIX) -> str:
+    """Return a process-scoped scratch schema name for oracle reconstruction."""
+    return f"{prefix}_{os.getpid()}"
+
+
+def _set_search_path(conn: psycopg.Connection, schema: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema))
+        )
+    conn.commit()
+
+
+def _create_oracle_schema(conn: psycopg.Connection, schema: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                sql.Identifier(schema)
+            )
+        )
+        cur.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+    conn.commit()
+
+
+def _drop_oracle_schema(conn: psycopg.Connection, schema: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                sql.Identifier(schema)
+            )
+        )
+    conn.commit()
+
+
+def _ensure_runtime_geocoding_available(conn: psycopg.Connection) -> None:
+    """Fail early if the loader-derived geocoding table is absent."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('public.geocoding') AS table_name")
+        row = cur.fetchone()
+        if row["table_name"] is None:
+            raise RuntimeError(
+                "Missing required runtime geocoding table public.geocoding. "
+                "Load the database before rebuilding the border fixture oracle."
+            )
+
+
+def _create_oracle_working_tables(conn: psycopg.Connection) -> None:
+    """Create only the loader scratch tables needed to build country_init."""
+    from pg_nearest_city.db.tables import (
+        CountryInit,
+        TmpIso3166,
+        TmpNonIsoAdm0,
+        TmpNonIsoGid0Parent,
+        TmpPromotedAdm1ToGid0,
+    )
+
+    for table in (
+        CountryInit,
+        TmpIso3166,
+        TmpNonIsoAdm0,
+        TmpNonIsoGid0Parent,
+        TmpPromotedAdm1ToGid0,
+    ):
+        with conn.cursor() as cur:
+            cur.execute(table.create_sql())
+    conn.commit()
+
+
+def _create_oracle_indices(conn: psycopg.Connection) -> None:
+    """Create only data-load scratch indexes inside the oracle schema."""
+    from pg_nearest_city.db.tables import get_tables
+
+    with conn.cursor() as cur:
+        for table in get_tables(filters=[{"is_for_data_load": True}]):
+            for index in table.get_indices():
+                if index.is_post_load:
+                    cur.execute(index.index_def)
+    conn.commit()
+
+
+def _apply_boundary_source_corrections(
+    conn: psycopg.Connection, boundary_source: BoundarySource
+) -> None:
+    """Apply boundary-table corrections without mutating runtime geocoding rows."""
+    from pg_nearest_city.db.corrections import (
+        GADM_DATA_CORRECTIONS,
+        NE_DATA_CORRECTIONS,
+    )
+    from pg_nearest_city.db.data_cleanup import make_queries
+
+    rows = (
+        GADM_DATA_CORRECTIONS
+        if boundary_source == BoundarySource.GADM
+        else NE_DATA_CORRECTIONS
+    )
+    with conn.cursor() as cur:
+        for correction, query in zip(rows, make_queries(rows), strict=False):
+            cur.execute(query)
+            if cur.rowcount > correction.result_limit:
+                conn.rollback()
+                raise RuntimeError(
+                    f"Correction affected too many rows: {correction.description} "
+                    f"expected <= {correction.result_limit}, got {cur.rowcount}"
+                )
+    conn.commit()
+
+
+def _materialize_oracle_table(conn: psycopg.Connection) -> None:
+    """Copy corrected pre-simplification country_init geometry into oracle table."""
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(ORACLE_TABLE))
+        )
+        cur.execute(
+            sql.SQL(
+                "CREATE TABLE {} AS "
+                "SELECT alpha2, alpha3, name, geom FROM country_init"
+            ).format(sql.Identifier(ORACLE_TABLE))
+        )
+        cur.execute(
+            sql.SQL("CREATE INDEX {} ON {} (alpha2)").format(
+                sql.Identifier(f"{ORACLE_TABLE}_alpha2_idx"),
+                sql.Identifier(ORACLE_TABLE),
+            )
+        )
+        cur.execute(
+            sql.SQL("CREATE INDEX {} ON {} USING GIST (geom)").format(
+                sql.Identifier(f"{ORACLE_TABLE}_geom_idx"),
+                sql.Identifier(ORACLE_TABLE),
+            )
+        )
+        cur.execute(sql.SQL("ANALYZE {}").format(sql.Identifier(ORACLE_TABLE)))
+    conn.commit()
+
+
+def rebuild_corrected_country_oracle(
+    *,
+    conn_settings: DBConnSettings,
+    cache_dir: Path,
+    boundary_source: BoundarySource,
+    schema: str | None = None,
+    logger: logging.Logger | None = None,
+) -> tuple[CountryOracleRef, psycopg.Connection]:
+    """Rebuild the corrected pre-simplification country oracle in scratch state.
+
+    The loader pipeline is reused for source import, ISO sovereignty merging,
+    GeoBoundaries/Overpass corrections, and overlap resolution, but the flow
+    stops before `SIMPLIFY_COUNTRY` and never writes to the shipped runtime
+    `public.country` table.  A scratch schema is used because GDAL imports need
+    cross-connection visibility; callers must drop it when done.
+    """
+    from pg_nearest_city.db.data_import import Config, DataLoader
+
+    log = logger or logging.getLogger("border_fixture_oracle")
+    oracle_schema = schema or make_oracle_schema_name()
+    loader = DataLoader(
+        config=Config(
+            db_conn_settings=conn_settings,
+            cache_dir=cache_dir,
+            cache_files=True,
+            boundary_source=boundary_source,
+        ),
+        logger=log,
+    )
+    conn = loader.conn
+
+    try:
+        _create_oracle_schema(conn, oracle_schema)
+        _set_search_path(conn, oracle_schema)
+        loader.config.db_conn_str = gdal_pg_conn_string_for_schema(
+            conn_settings, oracle_schema
+        )
+
+        _ensure_runtime_geocoding_available(conn)
+        _create_oracle_working_tables(conn)
+        loader._create_temp_reference_tables(conn)
+        loader._import_country_boundaries(conn)
+        _create_oracle_indices(conn)
+        _apply_boundary_source_corrections(conn, boundary_source)
+        loader._merge_countries_to_iso_defs(conn)
+        loader._update_country_geometries(conn)
+        loader._import_geoboundary_corrections(conn)
+        _materialize_oracle_table(conn)
+    except Exception:
+        _drop_oracle_schema(conn, oracle_schema)
+        conn.close()
+        raise
+
+    ref = CountryOracleRef(schema=oracle_schema)
+    log.info("Rebuilt corrected country oracle at %s", ref.qualified_name)
+    return ref, conn
+
+
+@contextmanager
+def corrected_country_oracle(
+    *,
+    conn_settings: DBConnSettings,
+    cache_dir: Path,
+    boundary_source: BoundarySource,
+    logger: logging.Logger | None = None,
+) -> Iterator[CountryOracleRef]:
+    """Context manager that rebuilds and then explicitly drops oracle scratch state."""
+    ref: CountryOracleRef | None = None
+    conn: psycopg.Connection | None = None
+    try:
+        ref, conn = rebuild_corrected_country_oracle(
+            conn_settings=conn_settings,
+            cache_dir=cache_dir,
+            boundary_source=boundary_source,
+            logger=logger,
+        )
+        yield ref
+    finally:
+        if ref is not None and conn is not None:
+            _drop_oracle_schema(conn, ref.schema)
+            conn.close()
 
 
 def normalize_country_pair(raw: str) -> CountryPair:
@@ -383,12 +657,26 @@ def main() -> None:
         scope_label = "all adjacent country pairs (global)"
     print(f"discovering border-city pairs for {scope_label}")
 
-    with psycopg.connect(DBConnSettings().conn_string) as conn, conn.cursor() as cur:
-        rows = discover_border_city_pairs(
-            cur,
-            country_pairs=country_pairs or None,
-            max_pairs_per_country_pair=args.max_pairs_per_country_pair,
-        )
+    conn_settings = DBConnSettings()
+    boundary_source = BoundarySource(args.boundary_source)
+    try:
+        with corrected_country_oracle(
+            conn_settings=conn_settings,
+            cache_dir=args.cache_dir,
+            boundary_source=boundary_source,
+        ) as oracle:
+            print(f"rebuilt corrected country oracle at {oracle.qualified_name}")
+            with (
+                psycopg.connect(conn_settings.conn_string) as conn,
+                conn.cursor() as cur,
+            ):
+                rows = discover_border_city_pairs(
+                    cur,
+                    country_pairs=country_pairs or None,
+                    max_pairs_per_country_pair=args.max_pairs_per_country_pair,
+                )
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
 
     if country_pairs:
         print_pair_summary(country_pairs, rows)

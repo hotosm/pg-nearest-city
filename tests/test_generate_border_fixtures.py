@@ -3,12 +3,16 @@ from pathlib import Path
 import pytest
 
 from pg_nearest_city.scripts.generate_border_fixtures import (
+    CountryOracleRef,
     count_rows_by_pair,
+    gdal_pg_conn_string_for_schema,
+    make_oracle_schema_name,
     normalize_country_pair,
     normalize_country_pairs,
     pairs_without_rows,
     parse_args,
 )
+from pg_nearest_city.db.settings import DBConnSettings
 
 
 def test_normalize_country_pair_uppercases_and_sorts():
@@ -37,6 +41,8 @@ def test_parse_args_defaults_country_pair_to_empty_for_global_discovery():
 
     assert args.country_pair == []
     assert args.pairs_output is None
+    assert args.cache_dir == Path("/data/cache")
+    assert args.boundary_source == "naturalearth"
 
 
 def test_parse_args_accepts_pair_output_alias():
@@ -64,3 +70,36 @@ def test_pairs_without_rows_reports_required_pairs_with_no_discoveries():
     ]
 
     assert pairs_without_rows(country_pairs, rows) == ["RS/XK"]
+
+
+def test_country_oracle_ref_formats_qualified_name():
+    ref = CountryOracleRef(schema="tmp_border_oracle_test")
+
+    assert ref.qualified_name == "tmp_border_oracle_test.border_country_oracle"
+
+
+def test_make_oracle_schema_name_uses_prefix_and_pid(monkeypatch):
+    monkeypatch.setattr(
+        "pg_nearest_city.scripts.generate_border_fixtures.os.getpid", lambda: 123
+    )
+
+    assert make_oracle_schema_name("tmp_test") == "tmp_test_123"
+
+
+def test_gdal_pg_conn_string_for_schema_includes_active_schema():
+    settings = DBConnSettings(
+        host="db.example.test",
+        port=5433,
+        name="nearest",
+        user="loader",
+        password="secret'quote",
+    )
+
+    conn_string = gdal_pg_conn_string_for_schema(settings, "tmp_oracle")
+
+    assert "host='db.example.test'" in conn_string
+    assert "port='5433'" in conn_string
+    assert "dbname='nearest'" in conn_string
+    assert "user='loader'" in conn_string
+    assert "password='secret\\'quote'" in conn_string
+    assert "active_schema='tmp_oracle'" in conn_string
