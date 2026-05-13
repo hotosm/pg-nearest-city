@@ -33,22 +33,6 @@ BORDER_PROBE_FIXTURE_PATH = Path("tests/fixtures/border_country_probes.csv")
 SEAM_BBOX_DEG = 0.25
 PAIR_BBOX_DEG = 0.15
 
-CSV_HEADER = [
-    "pair",
-    "country_a",
-    "country_b",
-    "country_name_a",
-    "country_name_b",
-    "city_a",
-    "city_b",
-    "lat_a",
-    "lon_a",
-    "lat_b",
-    "lon_b",
-    "distance_m",
-    "seam_length_m",
-]
-
 PROBE_CSV_HEADER = [
     "pair",
     "source_country",
@@ -188,14 +172,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=[s.value for s in BoundarySource],
         default=BoundarySource.NATURAL_EARTH.value,
         help="Boundary source to use when rebuilding the pre-simplification oracle",
-    )
-    parser.add_argument(
-        "--pairs-output",
-        "--pair-output",
-        "--output",
-        dest="pairs_output",
-        type=Path,
-        help="Optional CSV path for inspecting discovered border-city pairs",
     )
     parser.add_argument(
         "--probes-output",
@@ -487,16 +463,6 @@ class BorderFixtureGenerator:
 
     def run(self) -> BorderFixtureResult:
         """Run the full sequence and return the named result bundle."""
-        _, result = self._run_with_pair_rows()
-        return result
-
-    def _run_with_pair_rows(self) -> tuple[list[tuple], BorderFixtureResult]:
-        """Run the full sequence; also surface raw pair-row tuples for legacy CSV.
-
-        Pair rows are not part of the public contract; they are exposed only so
-        the CLI can keep writing the optional development pair CSV during the
-        transitional slice. A follow-up slice removes the pair CSV adapter.
-        """
         req = self._request
         country_pairs = set(req.country_pairs)
         with corrected_country_oracle(
@@ -524,12 +490,11 @@ class BorderFixtureGenerator:
                 )
 
         probe_rows = [_probe_row_from_tuple(row) for row in raw_probe_rows]
-        result = _build_result(
+        return _build_result(
             requested_country_pairs=frozenset(req.country_pairs),
             pair_rows=pair_rows,
             probe_rows=probe_rows,
         )
-        return pair_rows, result
 
 
 def _probe_row_from_tuple(row: tuple) -> ProbeRow:
@@ -653,40 +618,11 @@ def pairs_without_ok_probes(
     ]
 
 
-def print_pair_summary(country_pairs: set[CountryPair], rows: list[tuple]) -> None:
-    """Print a short deterministic discovery summary."""
-    counts = count_rows_by_pair(rows)
-    for pair in sorted(format_country_pair(pair) for pair in country_pairs):
-        print(f"{pair}: {counts[pair]} discovered city pairs")
-
-
-def print_discovered_pair_summary(rows: list[tuple]) -> None:
-    """Print per-pair counts using only what discovery produced."""
-    counts = count_rows_by_pair(rows)
-    for pair in sorted(counts):
-        print(f"{pair}: {counts[pair]} discovered city pairs")
-    print(f"total: {len(counts)} country pairs, {len(rows)} city pairs")
-
-
 def format_probe_status_summary(status_counts: Mapping[str, int]) -> str:
     """Format status counts in stable status order for generator summaries."""
     return ", ".join(
         f"{status}={status_counts.get(status, 0)}" for status in PROBE_STATUSES
     )
-
-
-def print_probe_summary(
-    pairs: Iterable[str], pair_rows: list[tuple], probe_rows: list[tuple]
-) -> None:
-    """Print per-pair discovery and probe-status counts."""
-    discovered_counts = count_rows_by_pair(pair_rows)
-    status_counts = count_probe_rows_by_pair_and_status(probe_rows)
-    for pair in sorted(pairs):
-        print(
-            f"{pair}: {discovered_counts[pair]} discovered city pairs, "
-            f"{format_probe_status_summary(status_counts.get(pair, Counter()))}"
-        )
-    print(f"total: {len(probe_rows)} probe rows")
 
 
 def pairs_without_rows(country_pairs: set[CountryPair], rows: list[tuple]) -> list[str]:
@@ -1170,15 +1106,6 @@ def generate_seam_probe_rows(
     return cur.fetchall()
 
 
-def write_pair_rows(output: Path, rows: list[tuple]) -> None:
-    """Write discovered border-city pairs to a CSV file."""
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh, lineterminator="\n")
-        writer.writerow(CSV_HEADER)
-        writer.writerows(rows)
-
-
 def write_probe_rows(output: Path, rows: list[tuple]) -> None:
     """Write generated seam-relative probe rows to a CSV file."""
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1190,26 +1117,19 @@ def write_probe_rows(output: Path, rows: list[tuple]) -> None:
 
 def _print_result_summary(result: BorderFixtureResult) -> None:
     """Print operator-facing summary derived from the generator's named result."""
-    if result.requested_country_pairs:
-        for summary in result.pair_summaries:
-            print(
-                f"{summary.pair}: {summary.discovered_rows} discovered city pairs, "
-                f"{format_probe_status_summary(summary.status_counts)}"
-            )
-        print(f"total: {len(result.probe_rows)} probe rows")
-    else:
+    if not result.requested_country_pairs:
         for summary in result.pair_summaries:
             print(f"{summary.pair}: {summary.discovered_rows} discovered city pairs")
         print(
             f"total: {len(result.pair_summaries)} country pairs, "
             f"{result.discovered_pair_count} city pairs"
         )
-        for summary in result.pair_summaries:
-            print(
-                f"{summary.pair}: {summary.discovered_rows} discovered city pairs, "
-                f"{format_probe_status_summary(summary.status_counts)}"
-            )
-        print(f"total: {len(result.probe_rows)} probe rows")
+    for summary in result.pair_summaries:
+        print(
+            f"{summary.pair}: {summary.discovered_rows} discovered city pairs, "
+            f"{format_probe_status_summary(summary.status_counts)}"
+        )
+    print(f"total: {len(result.probe_rows)} probe rows")
 
 
 def main() -> None:
@@ -1236,19 +1156,17 @@ def main() -> None:
             if k.startswith("db_") and v
         }
     )
-    boundary_source = BoundarySource(args.boundary_source)
 
     request = BorderFixtureRequest(
         db=conn_settings,
         cache_dir=args.cache_dir,
-        boundary_source=boundary_source,
+        boundary_source=BoundarySource(args.boundary_source),
         country_pairs=frozenset(country_pairs),
         max_pairs_per_country_pair=args.max_pairs_per_country_pair,
         ring_distances_m=PROBE_RING_DISTANCES_M,
     )
-    generator = BorderFixtureGenerator(request)
     try:
-        pair_rows, result = generator._run_with_pair_rows()
+        result = BorderFixtureGenerator(request).run()
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -1263,14 +1181,6 @@ def main() -> None:
         raise SystemExit(
             "no usable seam probe rows for required country pairs: "
             + ", ".join(result.missing_ok_pairs)
-        )
-
-    if args.pairs_output is not None:
-        write_pair_rows(args.pairs_output, pair_rows)
-        print(f"wrote {len(pair_rows)} pairs to {args.pairs_output}")
-    else:
-        print(
-            f"discovered {len(pair_rows)} pairs; pass --pairs-output to write CSV"
         )
 
     write_probe_rows(
