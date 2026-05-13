@@ -161,7 +161,12 @@ services:
     restart: "no"
     user: root
     command: >-
-      pgnearest-generate-border-fixtures
+      python -m pg_nearest_city.scripts.generate_border_fixtures
       --boundary-source naturalearth
+      --db-host db
+      --db-port 5432
+      --db-name cities
+      --db-user cities
+      --db-password dummycipassword
       --cache-dir /data/cache
-      --pairs-output /data/output/border_pairs.csv
+      --probes-output /data/tests/fixtures/border_country_probes.csv
