@@ -2,23 +2,46 @@ from pathlib import Path
 
 import pytest
 
+from pg_nearest_city.datasets.types import BoundarySource
 from pg_nearest_city.scripts.generate_border_fixtures import (
     BORDER_PROBE_FIXTURE_PATH,
+    BorderFixtureRequest,
+    BorderFixtureResult,
     CountryOracleRef,
     PROBE_CSV_HEADER,
-    count_probe_rows_by_pair_and_status,
-    count_rows_by_pair,
-    format_probe_status_summary,
+    PairSummary,
+    ProbeRow,
     gdal_pg_conn_string_for_schema,
     make_oracle_schema_name,
     normalize_country_pair,
     normalize_country_pairs,
-    pairs_without_ok_probes,
-    pairs_without_rows,
     parse_args,
     write_probe_rows,
 )
 from pg_nearest_city.db.settings import DBConnSettings
+
+
+def _make_probe_row() -> ProbeRow:
+    return ProbeRow(
+        pair="FR/MC",
+        source_country="MC",
+        expected_alpha2="MC",
+        expected_alpha3="MCO",
+        expected_country_name="Monaco",
+        neighbor_country="FR",
+        source_city="Monaco",
+        source_lat="43.7333000",
+        source_lon="7.4167000",
+        neighbor_city="Beausoleil",
+        neighbor_lat="43.7436000",
+        neighbor_lon="7.4238000",
+        seam_lat="43.7381000",
+        seam_lon="7.4210000",
+        ring_distance_m=100,
+        probe_lat="43.7375000",
+        probe_lon="7.4205000",
+        status="ok",
+    )
 
 
 def test_normalize_country_pair_uppercases_and_sorts():
@@ -57,6 +80,12 @@ def test_parse_args_accepts_probe_output_override():
     assert args.probes_output == Path("tmp/probes.csv")
 
 
+def test_parse_args_accepts_country_pair_appends():
+    args = parse_args(["--country-pair", "us/mx", "--country-pair", "SI/IT"])
+
+    assert args.country_pair == ["us/mx", "SI/IT"]
+
+
 def test_probe_csv_header_is_the_committed_fixture_contract():
     assert PROBE_CSV_HEADER == [
         "pair",
@@ -81,30 +110,37 @@ def test_probe_csv_header_is_the_committed_fixture_contract():
     assert "id" not in PROBE_CSV_HEADER
 
 
+def test_probe_row_as_csv_row_matches_header_order():
+    row = _make_probe_row()
+
+    csv_row = row.as_csv_row()
+
+    assert len(csv_row) == len(PROBE_CSV_HEADER)
+    assert dict(zip(PROBE_CSV_HEADER, csv_row)) == {
+        "pair": "FR/MC",
+        "source_country": "MC",
+        "expected_alpha2": "MC",
+        "expected_alpha3": "MCO",
+        "expected_country_name": "Monaco",
+        "neighbor_country": "FR",
+        "source_city": "Monaco",
+        "source_lat": "43.7333000",
+        "source_lon": "7.4167000",
+        "neighbor_city": "Beausoleil",
+        "neighbor_lat": "43.7436000",
+        "neighbor_lon": "7.4238000",
+        "seam_lat": "43.7381000",
+        "seam_lon": "7.4210000",
+        "ring_distance_m": 100,
+        "probe_lat": "43.7375000",
+        "probe_lon": "7.4205000",
+        "status": "ok",
+    }
+
+
 def test_write_probe_rows_uses_fixed_header_and_lf_line_endings(tmp_path):
     output = tmp_path / "fixtures" / "border_country_probes.csv"
-    rows = [
-        (
-            "FR/MC",
-            "MC",
-            "MC",
-            "MCO",
-            "Monaco",
-            "FR",
-            "Monaco",
-            "43.7333000",
-            "7.4167000",
-            "Beausoleil",
-            "43.7436000",
-            "7.4238000",
-            "43.7381000",
-            "7.4210000",
-            100,
-            "43.7375000",
-            "7.4205000",
-            "ok",
-        )
-    ]
+    rows = [_make_probe_row().as_csv_row()]
 
     write_probe_rows(output, rows)
 
@@ -116,55 +152,49 @@ def test_write_probe_rows_uses_fixed_header_and_lf_line_endings(tmp_path):
     )
 
 
-def test_count_rows_by_pair_counts_discovered_pair_keys():
-    rows = [
-        ("FR/MC", "FR", "MC"),
-        ("FR/MC", "FR", "MC"),
-        ("BD/IN", "BD", "IN"),
-    ]
-
-    assert count_rows_by_pair(rows) == {"FR/MC": 2, "BD/IN": 1}
-
-
-def test_pairs_without_rows_reports_required_pairs_with_no_discoveries():
-    country_pairs = {("BD", "IN"), ("FR", "MC"), ("RS", "XK")}
-    rows = [
-        ("FR/MC", "FR", "MC"),
-        ("BD/IN", "BD", "IN"),
-    ]
-
-    assert pairs_without_rows(country_pairs, rows) == ["RS/XK"]
-
-
-def test_count_probe_rows_by_pair_and_status_counts_statuses():
-    rows = [
-        ("FR/MC", "FR", "ok"),
-        ("FR/MC", "MC", "ambiguous"),
-        ("FR/MC", "MC", "ambiguous"),
-        ("BD/IN", "BD", "unplaceable"),
-    ]
-
-    assert count_probe_rows_by_pair_and_status(rows) == {
-        "FR/MC": {"ok": 1, "ambiguous": 2},
-        "BD/IN": {"unplaceable": 1},
-    }
-
-
-def test_pairs_without_ok_probes_reports_required_pairs_without_usable_rows():
-    country_pairs = {("BD", "IN"), ("FR", "MC"), ("RS", "XK")}
-    rows = [
-        ("FR/MC", "FR", "ok"),
-        ("BD/IN", "BD", "unplaceable"),
-    ]
-
-    assert pairs_without_ok_probes(country_pairs, rows) == ["BD/IN", "RS/XK"]
-
-
-def test_format_probe_status_summary_uses_stable_status_order():
-    assert (
-        format_probe_status_summary({"unplaceable": 2, "ok": 1})
-        == "ok=1, ambiguous=0, unplaceable=2"
+def test_border_fixture_request_is_frozen_and_exposes_named_fields():
+    request = BorderFixtureRequest(
+        db=DBConnSettings(),
+        cache_dir=Path("/data/cache"),
+        boundary_source=BoundarySource.NATURAL_EARTH,
+        country_pairs=frozenset({("FR", "MC")}),
+        max_pairs_per_country_pair=5,
+        ring_distances_m=(100, 500, 1000),
     )
+
+    assert request.cache_dir == Path("/data/cache")
+    assert request.boundary_source == BoundarySource.NATURAL_EARTH
+    assert request.country_pairs == frozenset({("FR", "MC")})
+    assert request.max_pairs_per_country_pair == 5
+    assert request.ring_distances_m == (100, 500, 1000)
+    with pytest.raises(AttributeError):
+        request.cache_dir = Path("/other")  # type: ignore[misc]
+
+
+def test_border_fixture_result_exposes_named_summary_fields():
+    probe = _make_probe_row()
+    summary = PairSummary(
+        pair="FR/MC",
+        discovered_rows=1,
+        status_counts={"ok": 1, "ambiguous": 0, "unplaceable": 0},
+    )
+    result = BorderFixtureResult(
+        probe_rows=[probe],
+        pair_summaries=[summary],
+        missing_required_pairs=[],
+        missing_ok_pairs=[],
+        discovered_pair_count=1,
+        requested_country_pairs=frozenset({("FR", "MC")}),
+    )
+
+    assert result.probe_rows == [probe]
+    assert result.pair_summaries == [summary]
+    assert result.missing_required_pairs == []
+    assert result.missing_ok_pairs == []
+    assert result.discovered_pair_count == 1
+    assert result.requested_country_pairs == frozenset({("FR", "MC")})
+    with pytest.raises(AttributeError):
+        result.discovered_pair_count = 2  # type: ignore[misc]
 
 
 def test_country_oracle_ref_formats_qualified_name():

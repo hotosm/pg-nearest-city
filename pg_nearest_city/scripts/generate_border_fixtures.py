@@ -528,7 +528,7 @@ def _build_result(
     probe_rows: list[ProbeRow],
 ) -> BorderFixtureResult:
     """Derive named summary data from the internal pair/probe row sequences."""
-    discovered_counts = count_rows_by_pair(pair_rows)
+    discovered_counts: Counter[str] = Counter(str(row[0]) for row in pair_rows)
     status_counts_by_pair: dict[str, Counter[str]] = {}
     for probe in probe_rows:
         status_counts_by_pair.setdefault(probe.pair, Counter())[probe.status] += 1
@@ -591,48 +591,11 @@ def format_country_pair(pair: CountryPair) -> str:
     return f"{pair[0]}/{pair[1]}"
 
 
-def count_rows_by_pair(rows: list[tuple]) -> Counter[str]:
-    """Count discovered rows by CSV pair key."""
-    return Counter(str(row[0]) for row in rows)
-
-
-def count_probe_rows_by_pair_and_status(rows: list[tuple]) -> dict[str, Counter[str]]:
-    """Count generated probe rows by pair and auditable row status."""
-    counts: dict[str, Counter[str]] = {}
-    for row in rows:
-        pair = str(row[0])
-        status = str(row[-1])
-        counts.setdefault(pair, Counter())[status] += 1
-    return counts
-
-
-def pairs_without_ok_probes(
-    country_pairs: set[CountryPair], probe_rows: list[tuple]
-) -> list[str]:
-    """Return formatted country pairs with no usable generated probe rows."""
-    counts = count_probe_rows_by_pair_and_status(probe_rows)
-    return [
-        pair
-        for pair in sorted(format_country_pair(pair) for pair in country_pairs)
-        if counts.get(pair, Counter())["ok"] == 0
-    ]
-
-
 def format_probe_status_summary(status_counts: Mapping[str, int]) -> str:
     """Format status counts in stable status order for generator summaries."""
     return ", ".join(
         f"{status}={status_counts.get(status, 0)}" for status in PROBE_STATUSES
     )
-
-
-def pairs_without_rows(country_pairs: set[CountryPair], rows: list[tuple]) -> list[str]:
-    """Return formatted country pairs with no discovered seed rows."""
-    counts = count_rows_by_pair(rows)
-    return [
-        pair
-        for pair in sorted(format_country_pair(pair) for pair in country_pairs)
-        if counts[pair] == 0
-    ]
 
 
 def discover_border_city_pairs(
