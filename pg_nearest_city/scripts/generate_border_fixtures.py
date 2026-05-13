@@ -645,24 +645,6 @@ def discover_border_city_pairs(
     if max_pairs_per_country_pair < 1:
         raise ValueError("max_pairs_per_country_pair must be >= 1")
 
-    if country_pairs:
-        cur.execute(
-            """
-            CREATE TEMP TABLE tmp_target_pairs (
-                country_a CHAR(2) NOT NULL,
-                country_b CHAR(2) NOT NULL,
-                PRIMARY KEY (country_a, country_b)
-            ) ON COMMIT DROP
-            """
-        )
-        cur.executemany(
-            """
-            INSERT INTO tmp_target_pairs (country_a, country_b)
-            VALUES (%s, %s)
-            """,
-            sorted(country_pairs),
-        )
-
     cur.execute(
         f"""
         CREATE TEMP TABLE tmp_normalized_countries ON COMMIT DROP AS
@@ -674,6 +656,8 @@ def discover_border_city_pairs(
         GROUP BY alpha2
         """
     )
+    # tmp_normalized_countries kept materialized: self-joined in the seam build
+    # below and the GIST/alpha2 indexes materially help that self-join.
     cur.execute(
         """
         CREATE INDEX tmp_normalized_countries_alpha2_idx
@@ -688,47 +672,62 @@ def discover_border_city_pairs(
     )
     cur.execute("ANALYZE tmp_normalized_countries")
 
-    pair_join = ""
+    # Inline the optional country-pair restriction as a VALUES list so the
+    # filter rides along with the seam build rather than a separate temp
+    # table.  Pairs come from `normalize_country_pair`, which already
+    # validates each side as a 2-char alpha-2 code.
+    pair_join_sql: sql.Composable = sql.SQL("")
     if country_pairs:
-        pair_join = """
-        JOIN tmp_target_pairs p
-          ON p.country_a = a.alpha2
-         AND p.country_b = b.alpha2
-        """
+        pair_values = sql.SQL(", ").join(
+            sql.SQL("({}, {})").format(sql.Literal(a), sql.Literal(b))
+            for a, b in sorted(country_pairs)
+        )
+        pair_join_sql = sql.SQL(
+            " JOIN (VALUES {values}) AS p(country_a, country_b)"
+            " ON p.country_a = a.alpha2 AND p.country_b = b.alpha2"
+        ).format(values=pair_values)
 
     cur.execute(
-        f"""
-        CREATE TEMP TABLE tmp_valid_seams ON COMMIT DROP AS
-        WITH seams AS (
-            SELECT
-                a.alpha2 AS country_a,
-                b.alpha2 AS country_b,
-                a.name AS country_name_a,
-                b.name AS country_name_b,
-                ST_LineMerge(
-                    ST_UnaryUnion(
-                        ST_CollectionExtract(
-                            ST_Intersection(ST_Boundary(a.geom), ST_Boundary(b.geom)),
-                            2
+        sql.SQL(
+            """
+            CREATE TEMP TABLE tmp_valid_seams ON COMMIT DROP AS
+            WITH seams AS (
+                SELECT
+                    a.alpha2 AS country_a,
+                    b.alpha2 AS country_b,
+                    a.name AS country_name_a,
+                    b.name AS country_name_b,
+                    ST_LineMerge(
+                        ST_UnaryUnion(
+                            ST_CollectionExtract(
+                                ST_Intersection(ST_Boundary(a.geom), ST_Boundary(b.geom)),
+                                2
+                            )
                         )
-                    )
-                ) AS seam_geom
-            FROM tmp_normalized_countries a
-            JOIN tmp_normalized_countries b
-              ON a.alpha2 < b.alpha2
-             AND a.geom && b.geom
-             AND ST_Intersects(a.geom, b.geom)
-            {pair_join}
+                    ) AS seam_geom
+                FROM tmp_normalized_countries a
+                JOIN tmp_normalized_countries b
+                  ON a.alpha2 < b.alpha2
+                 AND a.geom && b.geom
+                 AND ST_Intersects(a.geom, b.geom)
+                {pair_join}
+            )
+            SELECT
+                *,
+                ST_Length(seam_geom::geography) AS seam_length_m
+            FROM seams
+            WHERE seam_geom IS NOT NULL
+              AND NOT ST_IsEmpty(seam_geom)
+              AND ST_Length(seam_geom::geography) >= {min_seam_length}
+            """
+        ).format(
+            pair_join=pair_join_sql,
+            min_seam_length=sql.Literal(MIN_SEAM_LENGTH_M),
         )
-        SELECT
-            *,
-            ST_Length(seam_geom::geography) AS seam_length_m
-        FROM seams
-        WHERE seam_geom IS NOT NULL
-          AND NOT ST_IsEmpty(seam_geom)
-          AND ST_Length(seam_geom::geography) >= {MIN_SEAM_LENGTH_M}
-        """
     )
+    # tmp_valid_seams kept materialized: read again later by
+    # generate_seam_probe_rows on the same connection, so the seam build
+    # cost is amortized across both stages.
     cur.execute(
         """
         CREATE INDEX tmp_valid_seams_pair_idx
@@ -919,17 +918,12 @@ def generate_seam_probe_rows(
     if not distances or distances[0] <= 0:
         raise ValueError("ring_distances_m must contain positive distances")
 
-    cur.execute("DROP TABLE IF EXISTS tmp_probe_ring_distances")
-    cur.execute(
-        """
-        CREATE TEMP TABLE tmp_probe_ring_distances (
-            distance_m integer PRIMARY KEY
-        ) ON COMMIT DROP
-        """
-    )
-    cur.executemany(
-        "INSERT INTO tmp_probe_ring_distances (distance_m) VALUES (%s)",
-        [(distance,) for distance in distances],
+    # Inline the ring distances as a VALUES list rather than a scratch
+    # table.  The CROSS JOIN consumes them exactly once and the final
+    # SELECT orders by ring_distance_m, so row order is independent of the
+    # VALUES order.
+    ring_distance_values = sql.SQL(", ").join(
+        sql.SQL("({})").format(sql.Literal(distance)) for distance in distances
     )
 
     cur.execute(
@@ -1000,7 +994,7 @@ def generate_seam_probe_rows(
                         )::geometry
                     END AS candidate_geom
                 FROM seam_anchors anchor
-                CROSS JOIN tmp_probe_ring_distances distances
+                CROSS JOIN (VALUES {ring_distances}) AS distances(distance_m)
                 CROSS JOIN (VALUES (0, 0.0), (1, pi())) AS direction(
                     direction_index, bearing_delta
                 )
@@ -1101,7 +1095,10 @@ def generate_seam_probe_rows(
                 ST_X(row.seam_geom),
                 row.ring_distance_m
             """
-        ).format(oracle=sql.Identifier(oracle.schema, oracle.table))
+        ).format(
+            oracle=sql.Identifier(oracle.schema, oracle.table),
+            ring_distances=ring_distance_values,
+        )
     )
     return cur.fetchall()
 
