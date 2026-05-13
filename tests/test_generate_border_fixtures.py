@@ -5,6 +5,7 @@ import pytest
 from pg_nearest_city.datasets.types import BoundarySource
 from pg_nearest_city.scripts.generate_border_fixtures import (
     BORDER_PROBE_FIXTURE_PATH,
+    BorderFixtureGenerator,
     BorderFixtureRequest,
     BorderFixtureResult,
     CountryOracleRef,
@@ -12,6 +13,7 @@ from pg_nearest_city.scripts.generate_border_fixtures import (
     PairSummary,
     ProbeRow,
     gdal_pg_conn_string_for_schema,
+    main,
     make_oracle_schema_name,
     normalize_country_pair,
     normalize_country_pairs,
@@ -195,6 +197,60 @@ def test_border_fixture_result_exposes_named_summary_fields():
     assert result.requested_country_pairs == frozenset({("FR", "MC")})
     with pytest.raises(AttributeError):
         result.discovered_pair_count = 2  # type: ignore[misc]
+
+
+def test_main_fails_loudly_for_missing_required_pairs(monkeypatch):
+    result = BorderFixtureResult(
+        probe_rows=[],
+        pair_summaries=[
+            PairSummary(
+                pair="FR/MC",
+                discovered_rows=0,
+                status_counts={"ok": 0, "ambiguous": 0, "unplaceable": 0},
+            )
+        ],
+        missing_required_pairs=["FR/MC"],
+        missing_ok_pairs=[],
+        discovered_pair_count=0,
+        requested_country_pairs=frozenset({("FR", "MC")}),
+    )
+    monkeypatch.setattr(BorderFixtureGenerator, "run", lambda self: result)
+    monkeypatch.setattr(
+        "sys.argv", ["generate_border_fixtures.py", "--country-pair", "FR/MC"]
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="no discovered city pairs for required country pairs: FR/MC",
+    ):
+        main()
+
+
+def test_main_fails_loudly_for_missing_usable_probes(monkeypatch):
+    result = BorderFixtureResult(
+        probe_rows=[],
+        pair_summaries=[
+            PairSummary(
+                pair="FR/MC",
+                discovered_rows=1,
+                status_counts={"ok": 0, "ambiguous": 1, "unplaceable": 0},
+            )
+        ],
+        missing_required_pairs=[],
+        missing_ok_pairs=["FR/MC"],
+        discovered_pair_count=1,
+        requested_country_pairs=frozenset({("FR", "MC")}),
+    )
+    monkeypatch.setattr(BorderFixtureGenerator, "run", lambda self: result)
+    monkeypatch.setattr(
+        "sys.argv", ["generate_border_fixtures.py", "--country-pair", "FR/MC"]
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="no usable seam probe rows for required country pairs: FR/MC",
+    ):
+        main()
 
 
 def test_country_oracle_ref_formats_qualified_name():
