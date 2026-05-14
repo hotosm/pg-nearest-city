@@ -2,11 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from pg_nearest_city.datasets.types import BoundarySource
 from pg_nearest_city.scripts.generate_border_fixtures import (
     BORDER_PROBE_FIXTURE_PATH,
     BorderFixtureGenerator,
-    BorderFixtureRequest,
     BorderFixtureResult,
     CountryOracleRef,
     PROBE_CSV_HEADER,
@@ -80,6 +78,7 @@ def test_parse_args_accepts_probe_output_override():
     args = parse_args(["--probes-output", "tmp/probes.csv"])
 
     assert args.probes_output == Path("tmp/probes.csv")
+
 
 def test_probe_csv_header_is_the_committed_fixture_contract():
     assert PROBE_CSV_HEADER == [

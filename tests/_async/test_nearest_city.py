@@ -157,10 +157,7 @@ async def test_border_fixture_country_assignment(
     probe: BorderProbe, loaded_countries, border_geocoder
 ):
     """Runtime country-first query must match oracle expected alpha-2."""
-    if (
-        loaded_countries is not None
-        and probe.expected_alpha2 not in loaded_countries
-    ):
+    if loaded_countries is not None and probe.expected_alpha2 not in loaded_countries:
         pytest.skip(f"{probe.expected_alpha2} not loaded")
     location = await border_geocoder.query(lon=probe.probe_lon, lat=probe.probe_lat)
     assert location is not None
