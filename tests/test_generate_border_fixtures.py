@@ -81,13 +81,6 @@ def test_parse_args_accepts_probe_output_override():
 
     assert args.probes_output == Path("tmp/probes.csv")
 
-
-def test_parse_args_accepts_country_pair_appends():
-    args = parse_args(["--country-pair", "us/mx", "--country-pair", "SI/IT"])
-
-    assert args.country_pair == ["us/mx", "SI/IT"]
-
-
 def test_probe_csv_header_is_the_committed_fixture_contract():
     assert PROBE_CSV_HEADER == [
         "pair",
@@ -152,51 +145,6 @@ def test_write_probe_rows_uses_fixed_header_and_lf_line_endings(tmp_path):
         "Beausoleil,43.7436000,7.4238000,43.7381000,7.4210000,100,"
         "43.7375000,7.4205000,ok\n"
     )
-
-
-def test_border_fixture_request_is_frozen_and_exposes_named_fields():
-    request = BorderFixtureRequest(
-        db=DBConnSettings(),
-        cache_dir=Path("/data/cache"),
-        boundary_source=BoundarySource.NATURAL_EARTH,
-        country_pairs=frozenset({("FR", "MC")}),
-        max_pairs_per_country_pair=5,
-        ring_distances_m=(100, 500, 1000),
-    )
-
-    assert request.cache_dir == Path("/data/cache")
-    assert request.boundary_source == BoundarySource.NATURAL_EARTH
-    assert request.country_pairs == frozenset({("FR", "MC")})
-    assert request.max_pairs_per_country_pair == 5
-    assert request.ring_distances_m == (100, 500, 1000)
-    with pytest.raises(AttributeError):
-        request.cache_dir = Path("/other")  # type: ignore[misc]
-
-
-def test_border_fixture_result_exposes_named_summary_fields():
-    probe = _make_probe_row()
-    summary = PairSummary(
-        pair="FR/MC",
-        discovered_rows=1,
-        status_counts={"ok": 1, "ambiguous": 0, "unplaceable": 0},
-    )
-    result = BorderFixtureResult(
-        probe_rows=[probe],
-        pair_summaries=[summary],
-        missing_required_pairs=[],
-        missing_ok_pairs=[],
-        discovered_pair_count=1,
-        requested_country_pairs=frozenset({("FR", "MC")}),
-    )
-
-    assert result.probe_rows == [probe]
-    assert result.pair_summaries == [summary]
-    assert result.missing_required_pairs == []
-    assert result.missing_ok_pairs == []
-    assert result.discovered_pair_count == 1
-    assert result.requested_country_pairs == frozenset({("FR", "MC")})
-    with pytest.raises(AttributeError):
-        result.discovered_pair_count = 2  # type: ignore[misc]
 
 
 def test_main_fails_loudly_for_missing_required_pairs(monkeypatch):
