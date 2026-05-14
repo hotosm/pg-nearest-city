@@ -32,7 +32,7 @@ def fresh_db(fresh_db_conn_string):
     conn.close()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="session", loop_scope="session")
 def border_geocoder():
     """One NearestCity reused across all border probe rows."""
     with NearestCity() as geocoder:

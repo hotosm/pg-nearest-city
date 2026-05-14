@@ -230,9 +230,7 @@ def _quote_gdal_pg_value(value: object) -> str:
     return f"'{escaped}'"
 
 
-def gdal_pg_conn_string_for_schema(
-    settings: DBConnSettings, schema: str
-) -> str:
+def gdal_pg_conn_string_for_schema(settings: DBConnSettings, schema: str) -> str:
     """Build a GDAL PostgreSQL connection string scoped to a scratch schema."""
     parts = {
         "host": settings.host,
@@ -263,9 +261,7 @@ def _set_search_path(conn: psycopg.Connection, schema: str) -> None:
 def _create_oracle_schema(conn: psycopg.Connection, schema: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
-            sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
-                sql.Identifier(schema)
-            )
+            sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
         )
         cur.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
     conn.commit()
@@ -274,9 +270,7 @@ def _create_oracle_schema(conn: psycopg.Connection, schema: str) -> None:
 def _drop_oracle_schema(conn: psycopg.Connection, schema: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
-            sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
-                sql.Identifier(schema)
-            )
+            sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema))
         )
     conn.commit()
 
@@ -362,8 +356,7 @@ def _materialize_oracle_table(conn: psycopg.Connection) -> None:
         )
         cur.execute(
             sql.SQL(
-                "CREATE TABLE {} AS "
-                "SELECT alpha2, alpha3, name, geom FROM country_init"
+                "CREATE TABLE {} AS SELECT alpha2, alpha3, name, geom FROM country_init"
             ).format(sql.Identifier(ORACLE_TABLE))
         )
         cur.execute(
