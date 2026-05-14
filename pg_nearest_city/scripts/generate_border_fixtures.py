@@ -60,7 +60,7 @@ CountryPair = tuple[str, str]
 
 @dataclass(frozen=True, slots=True)
 class CountryOracleRef:
-    """Reference to the disposable corrected pre-simplification oracle table."""
+    """Reference to the disposable pre-simplification oracle table."""
 
     schema: str
     table: str = ORACLE_TABLE
@@ -355,7 +355,7 @@ def _apply_boundary_source_corrections(
 
 
 def _materialize_oracle_table(conn: psycopg.Connection) -> None:
-    """Copy corrected pre-simplification country_init geometry into oracle table."""
+    """Copy pre-simplification country_init geometry into oracle table."""
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(ORACLE_TABLE))
@@ -382,7 +382,7 @@ def _materialize_oracle_table(conn: psycopg.Connection) -> None:
     conn.commit()
 
 
-def rebuild_corrected_country_oracle(
+def rebuild_pre_simplification_country_oracle(
     *,
     conn_settings: DBConnSettings,
     cache_dir: Path,
@@ -390,7 +390,7 @@ def rebuild_corrected_country_oracle(
     schema: str | None = None,
     logger: logging.Logger | None = None,
 ) -> tuple[CountryOracleRef, psycopg.Connection]:
-    """Rebuild the corrected pre-simplification country oracle in scratch state.
+    """Rebuild the pre-simplification country oracle in scratch state.
 
     The loader pipeline is reused for source import, ISO sovereignty merging,
     GeoBoundaries/Overpass corrections, and overlap resolution, but the flow
@@ -436,12 +436,12 @@ def rebuild_corrected_country_oracle(
         raise
 
     ref = CountryOracleRef(schema=oracle_schema)
-    log.info("Rebuilt corrected country oracle at %s", ref.qualified_name)
+    log.info("Rebuilt pre-simplification country oracle at %s", ref.qualified_name)
     return ref, conn
 
 
 @contextmanager
-def corrected_country_oracle(
+def pre_simplification_country_oracle(
     *,
     conn_settings: DBConnSettings,
     cache_dir: Path,
@@ -452,7 +452,7 @@ def corrected_country_oracle(
     ref: CountryOracleRef | None = None
     conn: psycopg.Connection | None = None
     try:
-        ref, conn = rebuild_corrected_country_oracle(
+        ref, conn = rebuild_pre_simplification_country_oracle(
             conn_settings=conn_settings,
             cache_dir=cache_dir,
             boundary_source=boundary_source,
@@ -468,7 +468,7 @@ def corrected_country_oracle(
 class BorderFixtureGenerator:
     """Single entry point that owns the full border fixture generation flow.
 
-    The generator owns the corrected-country oracle rebuild, the scratch-schema
+    The generator owns the pre-simplification country oracle rebuild, the scratch-schema
     lifecycle, border-pair discovery, and seam-probe generation.  Discovered
     border pairs remain an internal step used to feed probe generation and are
     not part of the public surface.
@@ -489,14 +489,15 @@ class BorderFixtureGenerator:
         """Run the full sequence and return the named result bundle."""
         req = self._request
         country_pairs = set(req.country_pairs)
-        with corrected_country_oracle(
+        with pre_simplification_country_oracle(
             conn_settings=req.db,
             cache_dir=req.cache_dir,
             boundary_source=req.boundary_source,
             logger=self._logger,
         ) as oracle:
             self._logger.info(
-                "rebuilt corrected country oracle at %s", oracle.qualified_name
+                "rebuilt pre-simplification country oracle at %s",
+                oracle.qualified_name,
             )
             with (
                 psycopg.connect(req.db.conn_string) as conn,
