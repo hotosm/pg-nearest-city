@@ -43,6 +43,9 @@ USED_SUBS = set()
 
 def unasync_line(line):
     """Remove async tokens on given line."""
+    # Sync pytest fixtures do not accept pytest-asyncio's loop_scope argument.
+    line = re.sub(r'loop_scope="[^"]+"\s*,\s*', "", line)
+    line = re.sub(r',\s*loop_scope="[^"]+"', "", line)
     for index, (regex, repl) in enumerate(COMPILED_SUBS):
         old_line = line
         line = re.sub(regex, repl, line)
