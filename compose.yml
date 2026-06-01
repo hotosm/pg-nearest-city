@@ -129,3 +129,44 @@ services:
       --db-password dummycipassword
       --cache-dir /data/cache
       --output-dir /data/output
+
+  border-fixtures:
+    image: "ghcr.io/hotosm/pg-nearest-city:${TAG_OVERRIDE:-dev}"
+    build:
+      target: dev
+    profiles: [data-generation]
+    container_name: pg-nearest-city-border-fixtures
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Mount project config
+      - ./pyproject.toml:/data/pyproject.toml:ro
+      # Mount local package
+      - ./pg_nearest_city:/opt/python/lib/python3.10/site-packages/pg_nearest_city:ro
+      # Reuse the loader's cache so sources are not re-downloaded
+      - ./cache:/data/cache
+      # Output directory for the discovered border-city pair CSV
+      - ./output:/data/output
+      # Committed fixture area for the canonical generated border probe CSV
+      - ./tests:/data/tests
+    networks:
+      - net
+    environment:
+      - PGNEAREST_DB_HOST=db
+      - PGNEAREST_DB_PORT=5432
+      - PGNEAREST_DB_USER=cities
+      - PGNEAREST_DB_PASSWORD=dummycipassword
+      - PGNEAREST_DB_NAME=cities
+    restart: "no"
+    user: root
+    command: >-
+      python -m pg_nearest_city.scripts.generate_border_fixtures
+      --boundary-source naturalearth
+      --db-host db
+      --db-port 5432
+      --db-name cities
+      --db-user cities
+      --db-password dummycipassword
+      --cache-dir /data/cache
+      --probes-output /data/tests/fixtures/border_country_probes.csv
