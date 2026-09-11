@@ -7,6 +7,7 @@ import pytest
 import pytest_asyncio
 
 from pg_nearest_city import AsyncNearestCity, DbConfig, Location, geo_test_cases
+from tests.fixtures import BORDER_PROBE_IDS, BORDER_PROBES, BorderProbe
 
 
 # NOTE we define the fixture here and not in conftest.py to allow
@@ -29,6 +30,13 @@ async def fresh_db(fresh_db_conn_string):
     yield conn
 
     await conn.close()
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def border_geocoder():
+    """One AsyncNearestCity reused across all border probe rows."""
+    async with AsyncNearestCity() as geocoder:
+        yield geocoder
 
 
 async def test_db_conn_missng_vars():
@@ -141,3 +149,17 @@ async def test_cities_close_country_boundaries(case, loaded_countries):
         assert isinstance(location, Location)
         assert location.city == case.expected_city
         assert location.country == case.expected_country
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("probe", BORDER_PROBES, ids=BORDER_PROBE_IDS)
+async def test_border_fixture_country_assignment(
+    probe: BorderProbe, loaded_countries, border_geocoder
+):
+    """Runtime country-first query must match oracle expected alpha-2."""
+    if loaded_countries is not None and probe.expected_alpha2 not in loaded_countries:
+        pytest.skip(f"{probe.expected_alpha2} not loaded")
+    location = await border_geocoder.query(lon=probe.probe_lon, lat=probe.probe_lat)
+    assert location is not None
+    assert isinstance(location, Location)
+    assert location.country == probe.expected_alpha2

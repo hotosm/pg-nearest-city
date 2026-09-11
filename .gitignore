@@ -45,3 +45,4 @@ site
 
 # Allow package outputs
 !pg_nearest_city/data/*.xz
+
