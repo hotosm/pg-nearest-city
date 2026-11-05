@@ -133,6 +133,8 @@ class BaseNearestCity:
     DATA_ENV_VAR = "PGNEAREST_DATA_PATH"
     DATA_PACKAGE_PATH = str(Path(__file__).parent / "data")
     DATA_FALLBACK_PATH = "/data/pg_nearest_city"
+    # Roughly 5km, to resolve points in border gaps or just offshore.
+    MAX_COUNTRY_DISTANCE_DEG = 0.05
 
     # COPY statements for importing data
     COPY_COUNTRY_FROM = (
@@ -230,7 +232,13 @@ class BaseNearestCity:
             )
             SELECT g.city, g.country, g.lon, g.lat, c.alpha3, c.name
             FROM query_point qp
-            JOIN country c ON ST_Covers(c.geom, qp.geom)
+            CROSS JOIN LATERAL (
+              SELECT alpha2, alpha3, name, geom
+              FROM country
+              WHERE ST_DWithin(geom, qp.geom, {})
+              ORDER BY geom <-> qp.geom, ST_Area(geom)
+              LIMIT 1
+            ) c
             CROSS JOIN LATERAL (
               SELECT city, country, lon, lat, geom
               FROM geocoding
@@ -239,7 +247,11 @@ class BaseNearestCity:
               LIMIT 1
             ) g
             """
-        ).format(sql.Literal(lon), sql.Literal(lat))
+        ).format(
+            sql.Literal(lon),
+            sql.Literal(lat),
+            sql.Literal(BaseNearestCity.MAX_COUNTRY_DISTANCE_DEG),
+        )
 
     @staticmethod
     def _find_data_file(directory: Path, stem: str) -> Path | None:

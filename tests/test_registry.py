@@ -1,5 +1,7 @@
 """Tests for pg_nearest_city.datasets.registry."""
 
+import json
+
 from pg_nearest_city.datasets.registry import DatasetEntry, DatasetRegistry, GeoSource
 
 
@@ -39,15 +41,14 @@ class TestDatasetRegistry:
             url="https://example.com/a.zip",
         )
         reg.register(
-            geosource=GeoSource.GADM,
+            geosource=GeoSource.CGAZ,
             filename="b.zip",
             filehash="h2",
             filepath="/tmp/b.zip",
             url="https://example.com/b.zip",
         )
         assert reg.get_by_source(GeoSource.GEONAMES) == ["a.zip"]
-        assert reg.get_by_source(GeoSource.GADM) == ["b.zip"]
-        assert reg.get_by_source(GeoSource.NATURAL_EARTH) == []
+        assert reg.get_by_source(GeoSource.CGAZ) == ["b.zip"]
 
     def test_list_all(self):
         reg = DatasetRegistry(persist=False)
@@ -93,7 +94,7 @@ class TestDatasetRegistry:
         reg_path = tmp_path / "registry.json"
         reg = DatasetRegistry(registry_path=reg_path, persist=True)
         reg.register(
-            geosource=GeoSource.GADM,
+            geosource=GeoSource.CGAZ,
             filename="gadm.zip",
             filehash="abc",
             filepath="gadm.zip",
@@ -116,6 +117,20 @@ class TestDatasetRegistry:
         reg_path.write_text("not json{{{")
         reg = DatasetRegistry(registry_path=reg_path, persist=True)
         assert len(reg.entries) == 0
+
+    def test_load_keeps_valid_entries_beside_removed_sources(self, tmp_path):
+        reg_path = tmp_path / "registry.json"
+        entry = {"filehash": "abc", "filepath": "a.zip", "url": "https://a.test"}
+        reg_path.write_text(
+            json.dumps(
+                {
+                    "cities500.zip": {**entry, "geosource": "GEONAMES"},
+                    "ne.zip": {**entry, "geosource": "NATURAL_EARTH"},
+                }
+            )
+        )
+        reg = DatasetRegistry(registry_path=reg_path, persist=True)
+        assert set(reg.entries) == {"cities500.zip"}
 
     def test_make_sha256_hash(self, tmp_path):
         reg = DatasetRegistry(persist=False)

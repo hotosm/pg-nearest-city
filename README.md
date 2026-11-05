@@ -43,87 +43,75 @@
 
 ## Why do we need this?
 
-This package was developed primarily as a **basic** reverse geocoder for use within
-web frameworks (APIs) that **have an existing PostGIS connection to utilise**.
+We wanted a basic reverse geocoder for web APIs that already have a PostGIS
+connection: given a point, return the nearest city and country.
 
-Simple alternatives:
+There are good alternatives:
 
-- The [reverse geocoding](https://github.com/thampiman/reverse-geocoder) package
-  in Python is probably the original and canonincal implementation using K-D tree.
-  - However, it's a bit outdated now, with numerous unattended pull
-    requests and uses an unfavourable multiprocessing-based approach.
-  - It leaves a large memory footprint of approximately 260MB to load the
-    K-D tree in memory (see [benchmarks](./benchmark-results.md)), which
-    remains there: an unacceptable compromise for a web server for such a
-    small amount of functionality.
-- [This package](https://github.com/richardpenman/reverse_geocode) is an excellent
-  revamp of the package above, and possibly the best choice in many scenarios,
-  particularly if PostGIS is not available.
+- [reverse-geocoder](https://github.com/thampiman/reverse-geocoder) is the
+  original Python package, using a K-D tree. It's a bit outdated now, and keeps
+  around 260MB in memory, which is a lot for a web server.
+- [reverse_geocode](https://github.com/richardpenman/reverse_geocode) is a great
+  revamp of that package, and likely the best choice if you don't have PostGIS.
 
-The pg-nearest-city approach:
+Compared to these, pg-nearest-city:
 
-- Is approximately ~450x more performant (45ms --> 0.1ms).
-- Has a small ~8MB memory footprint, compared to ~260MB.
-  - Depends on the selected baseline dataset and compression algorithm:
-    GADM when compressed is ~25MB.
-- However it has a one-time initialisation penalty of approximately 30s-4m
-  to load the data into the database (which could be handled at
-  web server startup).
-  - As with the memory footprint, this depends on the baseline dataset
-    and compression algorithm selected.
+- Is around 450x faster (45ms down to 0.1ms).
+- Uses around 8MB of memory, instead of 260MB.
+- Has a one-time cost of 30s to 4 minutes to load the data into your database.
+  You could do this at web server startup.
 
 > [!NOTE]
-> We don't discuss web based geocoding services here, such as Nominatim, as simple
-> offline reverse-geocoding has two purposes:
->
-> - Reduced latency, when very precise locations are not required.
-> - Reduced load on free services such as Nominatim (particularly when running
-> in automated tests frequently).
-> - Reduced reliance on externally managed tools.
+> We don't cover web services like Nominatim here. An offline lookup has lower
+> latency, avoids load on free services (particularly in automated tests), and
+> means one less external dependency.
 
-### Priorities
+### How it works
 
-- Lightweight package size.
-- Minimal memory footprint.
-- High performance.
-- Keeping package size as small as possible.
+- Cities come from [GeoNames](https://www.geonames.org/) cities500 (population
+  over 500).
+- Country boundaries come from
+  [geoBoundaries CGAZ](https://www.geoboundaries.org/).
+- Our own shapes replace CGAZ for territories and disputed areas.
+- Geometry is simplified and subdivided, to keep the package small and queries
+  fast.
+- A query finds the nearest country polygon within 5km, then the nearest city
+  in that country.
 
-### How This Package Works
+### Accuracy
 
-- Ingest [GeoNames](https://www.geonames.org/) cities500 data
-  (cities with population > 500).
-- Ingest country boundary polygons from either [GADM](https://gadm.org/) or
-  [Natural Earth](https://www.naturalearthdata.com/).
-- Apply [GeoBoundaries](https://www.geoboundaries.org/) corrections for
-  inaccurate upstream geometry (e.g. disputed territories, overseas regions).
-- Clean and normalise country data (spelling fixes, ISO 3166-1 alignment, etc.).
-- Simplify geometry with PostGIS `ST_Subdivide` to shrink size and speed up queries.
-- Query: use `ST_Covers` to identify the covering country polygon, then a KNN
-  lateral join to find the nearest city within that country.
+This is a small offline lookup, so treat results as approximate:
+
+- Simplified borders can shift by up to around 100m. A point right on a border
+  may return the neighbouring country.
+- You get the nearest city in the matched country. That may not be the place
+  containing the point, and could be far away in sparsely populated areas.
+- Points over 5km from any country return `None`. That covers open sea, plus
+  some remote atolls and very small islands.
+- Disputed areas use one set of boundaries, which you may see drawn differently
+  elsewhere. Cities keep their GeoNames country, so the nearest city can be
+  distant there. For example, a point in Crimea returns Russia, with the nearest
+  Russian city across the Kerch Strait.
+
+As a guide, we agree with Nominatim on around 90% of a 312 point test set. Many
+of the differences are territories, where we return Hong Kong (`HK`) and
+Nominatim returns China (`CN`).
 
 ## Usage
 
-### Install
-
-Distributed as a pip package on PyPi:
-
 ```bash
 pip install pg-nearest-city
-# or use your dependency manager of choice
 ```
 
-### Run The Code
-
 > [!NOTE]
-> Coordinates use **(lon, lat)** order throughout, matching the GIS / PostGIS
-> convention where longitude is the X axis and latitude is Y.
+> Coordinates are always **(lon, lat)**, matching PostGIS.
 
-#### Async
+### Async
 
 ```python
 from pg_nearest_city import AsyncNearestCity
 
-# Existing code to get db connection, say from API endpoint
+# Existing code to get a db connection, say from an API endpoint
 db = await get_db_connection()
 
 async with AsyncNearestCity(db) as geocoder:
@@ -132,15 +120,15 @@ async with AsyncNearestCity(db) as geocoder:
 print(location.city)
 # "New York City"
 print(location.country)
-# "USA"
+# "US"
 ```
 
-#### Sync
+### Sync
 
 ```python
 from pg_nearest_city import NearestCity
 
-# Existing code to get db connection, say from API endpoint
+# Existing code to get a db connection, say from an API endpoint
 db = get_db_connection()
 
 with NearestCity(db) as geocoder:
@@ -149,15 +137,12 @@ with NearestCity(db) as geocoder:
 print(location.city)
 # "New York City"
 print(location.country)
-# "USA"
+# "US"
 ```
 
-#### Create A New DB Connection
+### Creating a new connection
 
-- If your app upstream already has a psycopg connection, this can be
-  passed through.
-- If you require a new database connection, the connection parameters
-  can be defined as DbConfig object variables:
+If you don't already have a psycopg connection, pass a `DbConfig`:
 
 ```python
 from pg_nearest_city import DbConfig, AsyncNearestCity
@@ -174,7 +159,8 @@ async with AsyncNearestCity(db_config) as geocoder:
     location = await geocoder.query(-74.0060, 40.7128)
 ```
 
-- Or alternatively as variables from your system environment:
+Or set these environment variables, and use `AsyncNearestCity()` with no
+arguments:
 
 ```dotenv
 PGNEAREST_DB_NAME=cities
@@ -184,55 +170,34 @@ PGNEAREST_DB_HOST=localhost
 PGNEAREST_DB_PORT=5432
 ```
 
-then
-
-```python
-from pg_nearest_city import AsyncNearestCity
-
-async with AsyncNearestCity() as geocoder:
-    location = await geocoder.query(-74.0060, 40.7128)
-```
-
 ## Testing
-
-Via Docker:
 
 ```bash
 docker compose run --rm test pytest
 ```
 
-Or locally (requires a running PostgreSQL instance with PostGIS and loaded data):
+Or locally, with a running PostGIS instance:
 
 ```bash
 PGNEAREST_DB_USER=myuser PGNEAREST_DB_NAME=postgres uv run pytest tests/ -v
 ```
 
-## Data Pipeline
+## Regenerating the data
 
-The `pgnearest-load` CLI command runs a multi-step pipeline that downloads source
-data, imports it into PostGIS, applies corrections, simplifies geometry, and
-exports compressed CSV files for distribution.
+You only need this for new GeoNames or CGAZ data, or to change our boundaries.
 
-### Running the Pipeline
+`pgnearest-load` downloads the sources, builds everything in PostGIS, and
+exports compressed CSVs. It takes around 20 minutes.
 
 ```bash
-# Using Natural Earth boundaries
-uv run pgnearest-load --boundary-source naturalearth \
-    --db-name postgres --db-user myuser --output-dir ./output
+uv run pgnearest-load --db-name postgres --db-user myuser --output-dir ./output
 
-# Using GADM boundaries
-uv run pgnearest-load --boundary-source gadm \
-    --db-name postgres --db-user myuser --output-dir ./output
-
-# Full rebuild (drops all tables first)
+# Full rebuild, dropping all tables first
 uv run pgnearest-load ... --clean
 ```
 
-### Key Flags
-
 | Flag                                    | Description                      |
 | --------------------------------------- | -------------------------------- |
-| `--boundary-source {gadm,naturalearth}` | Which boundary dataset to use    |
 | `--compression {auto,gzip,bz2,xz,zstd}` | Compression for exported files   |
 | `--no-cache`                            | Download to temp dir, no persist |
 | `--clean`                               | Drop all project tables first    |
@@ -240,18 +205,28 @@ uv run pgnearest-load ... --clean
 | `--list-steps`                          | Print pipeline steps and exit    |
 | `--country`                             | Filter to a country (e.g. `IT`)  |
 
-### Output Files
+The output files are:
 
-The pipeline exports three compressed CSV files:
+- `country.csv.<ext>`: subdivided country polygons.
+- `geocoding.csv.<ext>`: cities, with their country and coordinates.
+- `cities_500_simple.txt.<ext>`: simplified city data.
 
-- `country.csv.<ext>` — subdivided country polygons (alpha2, alpha3, name, WKB geometry).
-- `geocoding.csv.<ext>` — city-to-country mapping (city, country, lat, lon).
-- `cities_500_simple.txt.<ext>` — simplified city data.
+### Changing boundaries
 
-### When to Regenerate
+`pg_nearest_city/db/boundary_overrides.csv.xz` holds the shapes we use instead
+of CGAZ: territories, small enclaves and disputed areas. Each row is an alpha-2
+code and a WKB MultiPolygon. Edit the file and rebuild to change one.
 
-Manual regeneration is only necessary when:
+Country names are in `pg_nearest_city/db/country_names.csv`.
 
-- New GeoNames data becomes available and you want to update.
-- Upstream boundary datasets have been corrected.
-- You need to filter for a specific geographic region.
+## Attribution
+
+The bundled data is built from:
+
+- [geoBoundaries](https://www.geoboundaries.org/) (CC BY 4.0). Runfola D et al.
+  (2020) geoBoundaries: A global database of political administrative boundaries.
+  PLoS ONE 15(4): e0231866.
+- [GeoNames](https://www.geonames.org/) (CC BY 4.0).
+- [Natural Earth](https://www.naturalearthdata.com/) (public domain).
+- © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors (ODbL),
+  via Overpass and [Overture Maps](https://overturemaps.org/).

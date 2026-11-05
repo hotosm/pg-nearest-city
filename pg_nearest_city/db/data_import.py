@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import atexit
 import csv
-import gzip
 import itertools
 import logging
 import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -20,37 +19,11 @@ from osgeo import gdal
 import psycopg
 from psycopg.rows import DictRow, dict_row
 
-from pg_nearest_city.datasets.geoboundaries import GeoBoundaryConfig
 from pg_nearest_city.datasets.registry import DatasetRegistry, GeoSource
-from pg_nearest_city.datasets.sources import (
-    GADM_0_DATASET,
-    GADM_1_DATASET,
-    GADM_PROMOTED_TERRITORIES,
-    GADM_URLCONFIG,
-    GEONAMES_URLCONFIG,
-    NE_ADM1_DATASET,
-    NE_ADM1_URLCONFIG,
-    NE_COUNTRIES_DATASET,
-    NE_COUNTRIES_URLCONFIG,
-    NE_PROMOTED_TERRITORIES,
-    OVERPASS_URLCONFIG,
-)
-from pg_nearest_city.datasets.url_config import URLConfig
-from pg_nearest_city.datasets.types import (
-    BoundarySource,
-    CompressionAlgorithm,
-    DownloadOutcome,
-    GeoBoundaryRelease,
-)
+from pg_nearest_city.datasets.sources import CGAZ_URLCONFIG, GEONAMES_URLCONFIG
+from pg_nearest_city.datasets.types import CompressionAlgorithm, DownloadOutcome
 from pg_nearest_city.db import queries
-from pg_nearest_city.db.corrections import (
-    BOUNDARY_CORRECTIONS,
-    DATA_CORRECTIONS,
-    GADM_DATA_CORRECTIONS,
-    NE_BOUNDARY_CORRECTIONS,
-    NE_DATA_CORRECTIONS,
-    OVERPASS_BOUNDARY_TARGETS,
-)
+from pg_nearest_city.db.corrections import DATA_CORRECTIONS
 from pg_nearest_city.db.data_cleanup import make_queries
 from pg_nearest_city.db.settings import DBConnSettings
 from pg_nearest_city.db.tables import (
@@ -62,7 +35,6 @@ from pg_nearest_city.db.tables import (
 from pg_nearest_city.scripts.dataset_fetcher import (
     extract_dataset,
     fetch_and_extract_dataset,
-    fetch_geoboundaries,
 )
 
 if TYPE_CHECKING:
@@ -91,15 +63,21 @@ class Config:
     update_package: bool = False
 
     # Processing options
-    boundary_source: BoundarySource = BoundarySource.GADM
     country_filter: str | None = None  # Alpha-2 code from CLI (e.g., "IT")
 
     # Temporary table names
     tmp_tables: list[str] = field(default_factory=list)
 
     # Miscellaneous config
-    iso3166_path = Path(__file__).parent / "iso-3166-1.csv.gz"
+    country_names_path = Path(__file__).parent / "country_names.csv"
+    boundary_overrides_path = Path(__file__).parent / "boundary_overrides.csv.xz"
     temp_dir = Path(tempfile.mkdtemp(prefix="data_loader_"))
+
+    def _load_iso_mapping(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Return alpha-2 to alpha-3 and alpha-3 to alpha-2 lookups."""
+        with self.country_names_path.open(newline="", encoding="utf-8") as fh:
+            codes = [(row[0], row[1]) for row in csv.reader(fh)]
+        return dict(codes), {alpha3: alpha2 for alpha2, alpha3 in codes}
 
     def __post_init__(self):
         self.db_conn_str = self.db_conn_settings.conn_string
@@ -123,24 +101,6 @@ class Config:
                 a3_to_a2[a3] for a3 in required_a3 if a3 in a3_to_a2
             }
 
-    def _load_iso_mapping(self) -> tuple[dict[str, str], dict[str, str]]:
-        """Load alpha-2 ↔ alpha-3 mapping from bundled ISO 3166-1 CSV."""
-        a2_to_a3: dict[str, str] = {}
-        a3_to_a2: dict[str, str] = {}
-        with gzip.open(self.iso3166_path, "rt") as f:
-            for line in f:
-                parts = line.strip().split(",", 3)
-                if len(parts) < 2:
-                    continue
-                a2, a3 = parts[0], parts[1]
-                # Skip header or malformed rows: alpha-2 must be exactly
-                # 2 uppercase ASCII letters
-                if len(a2) != 2 or not a2.isalpha() or not a2.isupper():
-                    continue
-                a2_to_a3[a2] = a3
-                a3_to_a2[a3] = a2
-        return a2_to_a3, a3_to_a2
-
 
 class DataLoader:
     """Orchestrates fetching, processing, and importing datasets into the database."""
@@ -152,14 +112,6 @@ class DataLoader:
             psycopg.connect(self.config.db_conn_str, row_factory=dict_row),  # type: ignore[invalid-argument-type]
         )
         self.logger = logger or logging.getLogger("data_loader")
-
-        all_targets = list(BOUNDARY_CORRECTIONS)
-        if config.boundary_source == BoundarySource.NATURAL_EARTH:
-            all_targets.extend(NE_BOUNDARY_CORRECTIONS)
-        self.geoboundaries_config = GeoBoundaryConfig(
-            release=GeoBoundaryRelease.GB_OPEN,
-            targets=tuple(all_targets),
-        )
 
         if self.config.cache_files:
             registry_path = self.config.cache_dir / "dataset_registry.json"
@@ -241,56 +193,19 @@ class DataLoader:
         if result == DownloadOutcome.FAILED:
             raise RuntimeError("Failed to download GeoNames dataset")
 
-    def _download_gadm(self) -> None:
-        """Download GADM country boundaries dataset."""
-        self.logger.info("Downloading GADM dataset")
+    def _download_boundaries(self) -> None:
+        """Download the CGAZ country boundaries."""
+        self.logger.info("Downloading CGAZ dataset")
         result = fetch_and_extract_dataset(
-            url_config=GADM_URLCONFIG,
-            geosource=GeoSource.GADM,
+            url_config=CGAZ_URLCONFIG,
+            geosource=GeoSource.CGAZ,
             cache_dir=self.config.cache_dir,
             temp_dir=self.config.temp_dir,
             registry=self.registry,
             logger=self.logger,
         )
         if result == DownloadOutcome.FAILED:
-            raise RuntimeError("Failed to download GADM dataset")
-
-    def _download_naturalearth(self) -> None:
-        """Download Natural Earth country boundaries datasets."""
-        self.logger.info("Downloading Natural Earth datasets")
-        for url_config in (NE_COUNTRIES_URLCONFIG, NE_ADM1_URLCONFIG):
-            result = fetch_and_extract_dataset(
-                url_config=url_config,
-                geosource=GeoSource.NATURAL_EARTH,
-                cache_dir=self.config.cache_dir,
-                temp_dir=self.config.temp_dir,
-                registry=self.registry,
-                logger=self.logger,
-            )
-            if result == DownloadOutcome.FAILED:
-                raise RuntimeError(
-                    f"Failed to download Natural Earth dataset: {url_config.filename}"
-                )
-
-    def _download_boundaries(self) -> None:
-        """Download country boundary dataset from the configured source."""
-        if self.config.boundary_source == BoundarySource.GADM:
-            self._download_gadm()
-        else:
-            self._download_naturalearth()
-
-    def _download_geoboundaries(self) -> None:
-        """Download GeoBoundary correction datasets."""
-        self.logger.info("Downloading GeoBoundary datasets")
-        results = fetch_geoboundaries(
-            gb_config=self.geoboundaries_config,
-            cache_dir=self.config.cache_dir / "geoboundaries",
-            registry=self.registry,
-            logger=self.logger,
-        )
-        failed = [k for k, (o, _) in results.items() if o == DownloadOutcome.FAILED]
-        if failed:
-            self.logger.error(f"Failed to download geoboundaries: {', '.join(failed)}")
+            raise RuntimeError("Failed to download CGAZ dataset")
 
     def _clean_all_tables(self) -> None:
         """Drop ALL project tables (permanent and temp) for --clean recovery."""
@@ -499,35 +414,6 @@ class DataLoader:
             self.logger.error(f"Failed to DROP TABLE {table.name}: {e}")
             raise
 
-    def _create_temp_reference_tables(self, conn) -> None:
-        """Create temporary tables used for import."""
-        self.logger.info("Creating temporary tables used for import")
-        if not self.config.iso3166_path.exists():
-            self.logger.error(f"ISO3166-1 file not found: {self.config.iso3166_path}")
-            raise FileNotFoundError(
-                f"ISO3166-1 file not found: {self.config.iso3166_path}"
-            )
-
-        if self.config.boundary_source == BoundarySource.GADM:
-            promoted = GADM_PROMOTED_TERRITORIES
-        else:
-            promoted = NE_PROMOTED_TERRITORIES
-
-        try:
-            with conn.cursor() as cur:
-                with gzip.open(self.config.iso3166_path, "rb") as f:
-                    with cur.copy(queries.INSERT_ISO3166) as copy:
-                        for line in f:
-                            copy.write(line)
-                promote_sql = queries.insert_promoted_adm1_to_gid0(promoted)
-                if promote_sql:
-                    cur.execute(promote_sql)
-                conn.commit()
-        except Exception as e:
-            conn.rollback()
-            self.logger.error(f"Failed to import data: {e}")
-            raise
-
     def _import_geonames(self, conn) -> None:
         """Import the cleaned GeoNames data into PostgreSQL."""
         clean_file = self.config.temp_dir / "cities_clean.txt"
@@ -572,53 +458,6 @@ class DataLoader:
                 self.logger.error(f"Failed to import data: {e}")
                 raise
 
-    def _get_gadm_paths(self) -> tuple[Path, Path]:
-        """Resolve GADM source path (single .gpkg serves both ADM0 and ADM1 layers)."""
-        gadm_filenames = self.registry.get_by_source(source=GeoSource.GADM)
-        if not gadm_filenames:
-            raise RuntimeError(
-                "Missing GADM files in registry. "
-                "Run dataset_fetcher.py first to download the data."
-            )
-        cached = self.registry.get_cached_path(gadm_filenames[0], self.config.cache_dir)
-        if not cached or not cached.exists():
-            raise RuntimeError(
-                "Registry has entries but GADM files are missing from cache. "
-                "Run dataset_fetcher.py first to download the data."
-            )
-        if not extract_dataset(src_file=cached, dst_dir=self.config.temp_dir):
-            raise RuntimeError("Failed to extract GADM dataset")
-        gpkg = (Path(self.config.temp_dir) / gadm_filenames[0]).with_suffix(".gpkg")
-        return gpkg, gpkg
-
-    def _get_ne_boundary_paths(self) -> tuple[Path, Path]:
-        """Resolve Natural Earth source paths (.shp for ADM0 and ADM1)."""
-        ne_filenames = self.registry.get_by_source(source=GeoSource.NATURAL_EARTH)
-        if not ne_filenames:
-            raise RuntimeError(
-                "Missing Natural Earth files in registry. "
-                "Run dataset_fetcher.py first to download the data."
-            )
-        for filename in ne_filenames:
-            cached = self.registry.get_cached_path(filename, self.config.cache_dir)
-            if not cached or not cached.exists():
-                raise RuntimeError(
-                    f"Registry has entries but {filename} is missing from cache. "
-                    "Run dataset_fetcher.py first to download the data."
-                )
-            if not extract_dataset(src_file=cached, dst_dir=self.config.temp_dir):
-                raise RuntimeError(
-                    f"Failed to extract Natural Earth dataset: {filename}"
-                )
-        adm0_path = self.config.temp_dir / "ne_10m_admin_0_countries.shp"
-        adm1_path = self.config.temp_dir / "ne_10m_admin_1_states_provinces.shp"
-        for path in (adm0_path, adm1_path):
-            if not path.exists():
-                raise RuntimeError(
-                    f"Extraction succeeded but {path.name} not found in temp dir."
-                )
-        return adm0_path, adm1_path
-
     def _run_ogr_boundary_import(
         self, table_name: str, src_path: Path, sql_query: str
     ) -> None:
@@ -649,278 +488,40 @@ class DataLoader:
         finally:
             gdal.SetConfigOption("PG_USE_COPY", None)
 
-    def _import_country_boundaries(self, conn) -> None:
-        """Import country boundaries into PostgreSQL from the configured source."""
-        source = self.config.boundary_source
-        self.logger.info(f"Importing country boundaries from {source.value}")
+    def _import_boundaries(self, conn) -> None:
+        """Build country_init from CGAZ and the committed boundary overrides."""
+        from pg_nearest_city.utils import open_compressed
 
-        assert isinstance(self.config.temp_dir, Path)
-
-        if source == BoundarySource.GADM:
-            adm0_path, adm1_path = self._get_gadm_paths()
-            adm0_layer, adm1_layer = "ADM_0", "ADM_1"
-            adm0_cfg, adm1_cfg = GADM_0_DATASET, GADM_1_DATASET
-            exclude = None
-        else:
-            adm0_path, adm1_path = self._get_ne_boundary_paths()
-            adm0_layer = "ne_10m_admin_0_countries"
-            adm1_layer = "ne_10m_admin_1_states_provinces"
-            adm0_cfg, adm1_cfg = NE_COUNTRIES_DATASET, NE_ADM1_DATASET
-            exclude = None
-
-        sql_adm0 = queries.select_adm0(
-            file_layer=adm0_layer,
-            alpha3_column=adm0_cfg.alpha3_column,
-            adm0_name_column=adm0_cfg.adm0_name_column,
-            country_filter=self.config.country_filter_alpha3,
-            exclude_alpha3=exclude,
+        self.logger.info("Importing country boundaries")
+        self._run_ogr_boundary_import(
+            "tmp_cgaz",
+            self.config.cache_dir / CGAZ_URLCONFIG.filename,
+            queries.SELECT_CGAZ,
         )
-        sql_adm1 = queries.select_adm1(
-            file_layer=adm1_layer,
-            alpha3_column=adm1_cfg.alpha3_column,
-            adm0_name_column=adm1_cfg.adm0_name_column,
-            adm1_column=adm1_cfg.adm1_column,
-            adm1_name_column=adm1_cfg.adm1_name_column,
-            exclude_alpha3=exclude,
-        )
-
-        self._run_ogr_boundary_import("tmp_country_bounds_adm0", adm0_path, sql_adm0)
-        self._run_ogr_boundary_import("tmp_country_bounds_adm1", adm1_path, sql_adm1)
-
-    def _import_geoboundary_corrections(self, conn) -> None:
-        """Import geoboundary GeoJSON files as boundary corrections.
-
-        For each cached geoboundary GeoJSON:
-          1. ogr2ogr it into tmp_country_staging
-          2. Run the update query to merge corrections into country
-
-        Alpha-3 overrides for SARs/territories are already baked into the
-        cached GeoJSON files during the fetch phase (see GeoBoundaryConfig
-        _filter_geojson), so no post-import SQL fixup is needed.
-        """
-        self.logger.info("Importing geoboundary corrections")
-
-        # Only import files that are in the current geoboundaries config.
-        # The registry may contain files from previous runs with different
-        # BOUNDARY_CORRECTIONS - loading stale entries would overwrite correct polygons.
-        valid_filenames = {
-            f"geoBoundaries_{t.iso}_{t.adm_level}.geojson"
-            for t in self.geoboundaries_config.targets
-        }
-        gb_files = [
-            f
-            for f in self.registry.get_by_source(source=GeoSource.GEOBOUNDARIES)
-            if (e := self.registry.get(f)) and e.filepath in valid_filenames
-        ]
-        if not gb_files:
-            self.logger.warning(
-                "No geoboundary files in registry; skipping corrections. "
-                "Run dataset_fetcher.py first to download geoboundary data."
-            )
-            return
-
-        imported_count = 0
-        for gb_key in gb_files:
-            entry = self.registry.get(gb_key)
-            if not entry:
-                continue
-
-            geojson_path = self.config.cache_dir / "geoboundaries" / entry.filepath
-            if not geojson_path.exists():
-                self.logger.error(
-                    f"Registry entry {gb_key} points to {geojson_path} "
-                    "but file is missing; skipping"
-                )
-                continue
-
-            self.logger.info(f"Importing geoboundary: {geojson_path.name}")
-
-            gdal.SetConfigOption("OGR_GEOJSON_MAX_OBJ_SIZE", "0")
-            try:
-                result = gdal.VectorTranslate(
-                    f"PG:{self.config.db_conn_str}",
-                    str(geojson_path.resolve()),
-                    format="PostgreSQL",
-                    layerName="tmp_country_staging",
-                    accessMode="append",
-                    geometryType="PROMOTE_TO_MULTI",
-                )
-                if result is None:
-                    raise RuntimeError(
-                        f"GDAL VectorTranslate failed for {geojson_path.name}: "
-                        f"{gdal.GetLastErrorMsg()}"
-                    )
-                result = None
-                imported_count += 1
-            except Exception:
-                self.logger.error(f"GDAL failed for {geojson_path.name}; skipping")
-                continue
-            finally:
-                gdal.SetConfigOption("OGR_GEOJSON_MAX_OBJ_SIZE", None)
-
-        if imported_count == 0:
-            self.logger.warning("No geoboundary files were imported")
-            return
-
-        self.logger.info(
-            f"Imported {imported_count} geoboundary file(s) into tmp_country_staging"
-        )
-
-        # Run the update query to merge staging data into country table
+        alpha2_filter = self.config.country_filter_alpha2
         try:
             with conn.cursor() as cur:
-                cur.execute(queries.UPDATE_COUNTRY_FROM_GEOBOUNDARIES)
-                conn.commit()
-                self.logger.info("Geoboundary corrections applied to country table")
+                with self.config.country_names_path.open("rb") as fh:
+                    with cur.copy(queries.COPY_COUNTRY_NAMES) as copy:
+                        copy.write(fh.read())
+                with open_compressed(self.config.boundary_overrides_path) as fh:
+                    with cur.copy(queries.COPY_BOUNDARY_OVERRIDES) as copy:
+                        copy.write(fh.read())
+                cur.execute(queries.BUILD_COUNTRY_INIT)
+                if alpha2_filter:
+                    cur.execute(
+                        queries.DELETE_UNFILTERED_COUNTRIES, [sorted(alpha2_filter)]
+                    )
+            conn.commit()
         except Exception as e:
             conn.rollback()
-            self.logger.error(f"Failed to update country boundaries: {e}")
+            self.logger.error(f"Failed to build country boundaries: {e}")
             raise
-
-        self._import_overpass_boundary_corrections(conn)
-        self._resolve_country_overlaps(conn)
-
-    def _resolve_country_overlaps(self, conn) -> None:
-        """Remove exclave areas from surrounding country polygons via ST_Difference.
-
-        After all boundary corrections are applied, any country whose polygon
-        was not updated to exclude a neighbour's exclave will overlap with that
-        exclave's polygon.  For each such pair we subtract the smaller country's
-        geometry from the larger one, leaving each exclave's territory exclusively
-        assigned to the correct country.
-        """
-        self.logger.info(
-            "Resolving overlapping country boundaries - this may take some time"
-        )
-        try:
-            with conn.cursor() as cur:
-                cur.execute(queries.RESOLVE_COUNTRY_OVERLAPS)
-                affected = cur.rowcount
-                conn.commit()
-                self.logger.info(
-                    f"Resolved overlapping boundaries for {affected} country/countries"
-                )
-        except Exception as e:
-            conn.rollback()
-            self.logger.error(f"Failed to resolve country overlaps: {e}")
-            raise
-
-    def _import_overpass_boundary_corrections(self, conn) -> None:
-        """Fetch boundaries from Overpass for territories absent from GeoBoundaries.
-
-        For each target:
-          1. POST the OverpassQL query and cache the OSM XML response.
-          2. ogr2ogr the OSM multipolygons layer into a transient temp table.
-          3. Upsert the unioned boundary geometry directly into country_init.
-          4. Drop the transient temp table.
-
-        Skipped when using GADM as the boundary source, since GADM already
-        includes all Overpass target territories.
-        """
-        if self.config.boundary_source == BoundarySource.GADM:
-            self.logger.info(
-                "Skipping Overpass boundary corrections (not needed for GADM)"
-            )
-            return
-
-        overpass_cache_dir = self.config.cache_dir / "overpass"
-        overpass_cache_dir.mkdir(parents=True, exist_ok=True)
-
-        from pg_nearest_city.datasets.types import OverpassBoundaryTarget
-
-        reg_keys = OverpassBoundaryTarget.make_registry_keys(OVERPASS_BOUNDARY_TARGETS)
-
-        for target, reg_key in zip(OVERPASS_BOUNDARY_TARGETS, reg_keys, strict=True):
-            query_str = target.query.make_data_query()
-            url_config = URLConfig(
-                url=OVERPASS_URLCONFIG.url,
-                data=f"data={query_str}",
-                target_filename=f"{reg_key}.osm",
-                timeout=180.0,
-            )
-            osm_path = overpass_cache_dir / url_config.filename
-
-            self.logger.info(f"Fetching Overpass boundary for {target.alpha3}")
-            outcome = url_config.ensure_cached(
-                cache_dir=overpass_cache_dir,
-                local_freshness=timedelta(days=7),
-                timeout_get=180.0,
-                logger=self.logger,
-            )
-            if outcome == DownloadOutcome.FAILED:
-                self.logger.warning(
-                    f"Failed to fetch Overpass boundary for {target.alpha3}; skipping"
-                )
-                continue
-
-            tmp_tbl = f"tmp_overpass_{target.alpha3.lower()}"
-            try:
-                result = gdal.VectorTranslate(
-                    f"PG:{self.config.db_conn_str}",
-                    str(osm_path),
-                    format="PostgreSQL",
-                    layers=["multipolygons"],
-                    layerName=tmp_tbl,
-                    accessMode="overwrite",
-                )
-                if result is None:
-                    raise RuntimeError(
-                        f"GDAL VectorTranslate failed for Overpass boundary "
-                        f"{target.alpha3}: {gdal.GetLastErrorMsg()}"
-                    )
-                result = None
-            except Exception:
-                self.logger.warning(
-                    f"GDAL failed for Overpass boundary {target.alpha3}; skipping"
-                )
-                continue
-
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        queries.upsert_overpass_boundary(tmp_tbl),
-                        (target.alpha2, target.alpha3, target.name),
-                    )
-                    conn.commit()
-                    self.logger.info(
-                        f"Upserted Overpass boundary for {target.alpha3} "
-                        "into country_init"
-                    )
-                    cur.execute(
-                        queries.clip_overlapping_countries(target.alpha2),
-                    )
-                    clipped = cur.rowcount
-                    conn.commit()
-                    if clipped:
-                        self.logger.info(
-                            f"Clipped {clipped} overlapping country/countries "
-                            f"against {target.alpha3}"
-                        )
-                self.registry.register(
-                    geosource=GeoSource.OVERPASS,
-                    filename=reg_key,
-                    filehash=target.query_hash,
-                    filepath=url_config.filename,
-                    url=OVERPASS_URLCONFIG.url,
-                )
-                with conn.cursor() as cur:
-                    cur.execute(queries.drop_table(tmp_tbl))
-                    conn.commit()
-            except Exception as e:
-                conn.rollback()
-                self.logger.warning(
-                    f"Failed to insert Overpass boundary for {target.alpha3}: {e}"
-                )
-                continue
 
     def _cleanup_datasets(self, conn):
         """Fix known issues with datasets."""
         self.logger.info("Cleaning up imported datasets")
-        rows = list(DATA_CORRECTIONS)
-        if self.config.boundary_source == BoundarySource.GADM:
-            rows.extend(GADM_DATA_CORRECTIONS)
-        else:
-            rows.extend(NE_DATA_CORRECTIONS)
+        rows = DATA_CORRECTIONS
         query_data = zip(rows, make_queries(rows), strict=False)
         with conn.cursor() as cur:
             for query_info, query in query_data:
@@ -946,43 +547,6 @@ class DataLoader:
                     conn.rollback()
                     self.logger.error(f"Failed to update data: {e}")
                     raise
-
-    def _merge_countries_to_iso_defs(self, conn) -> None:
-        """Ensure all country boundaries respect ISO3166-1 definitions."""
-        try:
-            with conn.cursor() as cur:
-                self.logger.info("Finding countries not defined by ISO3166-1")
-                cur.execute(queries.INSERT_NON_ISO_ADM0)
-                self.logger.info(
-                    "Finding countries to be split as defined by ISO3166-1"
-                )
-                cur.execute(queries.INSERT_NON_ISO_GID0_Z01_Z09_PARENTS)
-                cur.execute(queries.INSERT_NON_ISO_GID0_BORDER_HEURISTICS)
-                cur.execute(queries.UPDATE_TMP_ADM0_FROM_ISO_DEFS)
-                cur.execute(queries.INSERT_PROMOTED_ADM1_TO_ADM0)
-                cur.execute(queries.UPDATE_TMP_ADM0_FROM_NONISO_DEFS)
-                conn.commit()
-        except Exception as e:
-            conn.rollback()
-            self.logger.error(f"Failed to merge countries: {e}")
-            raise
-
-    def _update_country_geometries(self, conn) -> None:
-        """Update geometry columns."""
-        try:
-            with conn.cursor() as cur:
-                self.logger.info("Updating country boundaries")
-                cur.execute(queries.UPDATE_COUNTRY_INIT_GEOM_ADM0)
-                if not self.config.country_filter_alpha3:
-                    if self.config.boundary_source == BoundarySource.GADM:
-                        cur.execute(queries.INSERT_COUNTRY_INIT_GEOM_ADM1_GADM)
-                    else:
-                        cur.execute(queries.INSERT_COUNTRY_INIT_GEOM_ADM1)
-                conn.commit()
-        except Exception as e:
-            conn.rollback()
-            self.logger.error(f"Failed to update country with geom: {e}")
-            raise
 
     def _create_spatial_indices(self, conn):
         """Create spatial indices for efficient processing."""

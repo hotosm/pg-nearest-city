@@ -36,7 +36,7 @@ def make_file_link(
             else:
                 dst.symlink_to(src)
             return errors
-        except _LinkError as e:
+        except (OSError, _LinkError) as e:
             errors.append(
                 LinkError(
                     link_err=e, link_type="hardlink" if use_hardlink else "symlink"

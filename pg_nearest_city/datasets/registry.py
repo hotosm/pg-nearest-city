@@ -15,11 +15,8 @@ TEN_MIB: int = 10_485_760
 class GeoSource(str, Enum):
     """Enumeration of supported geospatial data sources."""
 
-    GADM = "GADM"
-    GEOBOUNDARIES = "GEOBOUNDARIES"
+    CGAZ = "CGAZ"
     GEONAMES = "GEONAMES"
-    NATURAL_EARTH = "NATURAL_EARTH"
-    OVERPASS = "OVERPASS"
 
 
 @dataclass
@@ -67,8 +64,11 @@ class DatasetRegistry:
         try:
             with open(self.registry_path, "r") as f:
                 data = json.load(f)
+                known_sources = {source.value for source in GeoSource}
                 self.entries = {
-                    key: DatasetEntry.from_dict(value) for key, value in data.items()
+                    key: DatasetEntry.from_dict(value)
+                    for key, value in data.items()
+                    if value.get("geosource") in known_sources
                 }
             self.logger.info(f"Loaded {len(self.entries)} dataset entries")
         except (json.JSONDecodeError, KeyError, ValueError) as e:

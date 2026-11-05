@@ -166,6 +166,11 @@ RUN --mount=type=cache,target=/root/.cache <<EOT
         --project /_lock \
         --locked \
         --dev \
+        --no-install-package gdal
+    # Must match the distro libgdal, not the locked version
+    uv pip install \
+        --python=$UV_PROJECT_ENVIRONMENT \
+        "gdal==$(gdal-config --version)"
 EOT
 CMD ["bash"]
 

@@ -7,6 +7,19 @@ import pytest
 
 
 from pg_nearest_city import NearestCity, DbConfig, Location, geo_test_cases
+from tests.fixtures import (
+    BORDER_PROBE_IDS,
+    BORDER_PROBES,
+    BorderProbe,
+    load_nominatim_countries,
+)
+
+
+# Nominatim reports sovereign states for some territories, so never 100%.
+MIN_NOMINATIM_MATCH = 0.9
+
+# Probes come from unsimplified boundaries, so seams can shift by this much.
+BORDER_TOLERANCE_M = 100
 
 
 # NOTE we define the fixture here and not in conftest.py to allow
@@ -29,6 +42,12 @@ def fresh_db(fresh_db_conn_string):
     yield conn
 
     conn.close()
+
+
+@pytest.fixture(scope="session")
+def border_geocoder():
+    with NearestCity() as geocoder:
+        yield geocoder
 
 
 def test_db_conn_missng_vars():
@@ -65,6 +84,8 @@ def test_full_initialization_query():
 
     assert location is not None
     assert location.city == "New York City"
+    assert location.lat == pytest.approx(40.71, abs=0.1)
+    assert location.lon == pytest.approx(-74.01, abs=0.1)
     assert isinstance(location, Location)
     assert location.country_alpha3 == "USA"
     assert location.country_name is not None
@@ -141,3 +162,105 @@ def test_cities_close_country_boundaries(case, loaded_countries):
         assert isinstance(location, Location)
         assert location.city == case.expected_city
         assert location.country == case.expected_country
+
+
+@pytest.mark.integration
+def test_point_in_gap_between_countries_resolves(test_db):
+    with NearestCity(test_db) as geocoder:
+        location = geocoder.query(lon=6.9274, lat=46.0147)
+
+    assert location is not None
+    assert location.country in {"CH", "FR", "IT"}
+
+
+@pytest.mark.integration
+def test_inland_city_on_long_polygon_edge_resolves(test_db):
+    with NearestCity(test_db) as geocoder:
+        location = geocoder.query(lon=-83.78906, lat=31.17991)
+
+    assert location is not None
+    assert location.city == "Moultrie"
+
+
+@pytest.mark.integration
+def test_offshore_point_uses_nearest_polygon(test_db):
+    with NearestCity(test_db) as geocoder:
+        location = geocoder.query(lon=14.633234, lat=67.488647)
+
+    assert location is not None
+    assert location.country == "NO"
+
+
+@pytest.mark.integration
+def test_enclave_wins_over_surrounding_country(test_db):
+    with NearestCity(test_db) as geocoder:
+        location = geocoder.query(lon=12.4534, lat=41.9029)
+
+    assert location is not None
+    assert location.country == "VA"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("lon", "lat", "country"),
+    [
+        (-66.1, 18.45, "PR"),
+        (144.75, 13.47, "GU"),
+        (114.17, 22.32, "HK"),
+        (-63.24971, 17.62652, "BQ"),
+        (-6.80501, 61.77103, "FO"),
+        (-8.71, 70.93, "SJ"),
+    ],
+)
+def test_territory_coast_is_not_assigned_to_parent(test_db, lon, lat, country):
+    with NearestCity(test_db) as geocoder:
+        location = geocoder.query(lon=lon, lat=lat)
+
+    assert location is not None
+    assert location.country == country
+
+
+@pytest.mark.integration
+def test_countries_agree_with_nominatim(test_db):
+    points = load_nominatim_countries()
+    with NearestCity(test_db) as geocoder:
+        locations = [geocoder.query(lon, lat) for lon, lat, _ in points]
+
+    matches = [
+        location is not None and location.country == country
+        for location, (_, _, country) in zip(locations, points, strict=True)
+    ]
+    assert sum(matches) / len(matches) >= MIN_NOMINATIM_MATCH
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("probe", BORDER_PROBES, ids=BORDER_PROBE_IDS)
+def test_border_fixture_country_assignment(
+    probe: BorderProbe, loaded_countries, border_geocoder
+):
+    if loaded_countries is not None and probe.expected_alpha2 not in loaded_countries:
+        pytest.skip(f"{probe.expected_alpha2} not loaded")
+    location = border_geocoder.query(lon=probe.probe_lon, lat=probe.probe_lat)
+    assert location is not None
+    assert isinstance(location, Location)
+    if location.country == probe.expected_alpha2:
+        return
+    assert location.country in probe.pair.split("/")
+    with border_geocoder.connection.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM country
+            WHERE alpha2 = %s AND ST_DWithin(
+              geom::geography,
+              ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
+              %s
+            )
+            """,
+            (
+                probe.expected_alpha2,
+                probe.probe_lon,
+                probe.probe_lat,
+                BORDER_TOLERANCE_M,
+            ),
+        )
+        assert cur.fetchone() is not None
