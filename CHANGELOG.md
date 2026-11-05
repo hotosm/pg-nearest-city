@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.0.0 (2026-11-05)
+
+### Feat
+
+- overhaul repo dataset used to geoBoundaries, higher success rate ofr Nominatim comparison
+- commit canonical border probe fixture with seam/probe coords
+- generate seam-relative probe rows for border fixtures
+- rebuild corrected country oracle for border fixtures
+- default border discovery to all adjacent country pairs
+- add border fixture generation scripts
+- add explicit max pairs per country argument
+- add border city pair discovery script
+
+### Fix
+
+- strip loop_scope kwarg when unasyncing pytest fixtures
+
+### Refactor
+
+- rename corrected-country oracle to pre-simplification
+- build ProbeRow at the cursor and name the pair-discovery seam
+- move discovery and probe generation behind BorderFixtureGenerator seam
+- thin main() to CLI adapter, drop pair CSV output
+- introduce BorderFixtureGenerator deep module with request/result types
+
+### Perf
+
+- fold seam-city scratch tables into the discovered-pairs CTE
+- inline one-shot scratch relations in border fixture generator
+
 ## 2.0.0 (2026-03-23)
 
 ### Feat
