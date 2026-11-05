@@ -121,7 +121,6 @@ services:
     user: root
     command: >-
       pgnearest-load
-      --boundary-source naturalearth
       --db-host db
       --db-port 5432
       --db-name cities
@@ -144,11 +143,9 @@ services:
       - ./pyproject.toml:/data/pyproject.toml:ro
       # Mount local package
       - ./pg_nearest_city:/opt/python/lib/python3.10/site-packages/pg_nearest_city:ro
-      # Reuse the loader's cache so sources are not re-downloaded
+      # Reuse the loader's source cache
       - ./cache:/data/cache
-      # Output directory for the discovered border-city pair CSV
-      - ./output:/data/output
-      # Committed fixture area for the canonical generated border probe CSV
+      # Fixture output
       - ./tests:/data/tests
     networks:
       - net
@@ -162,7 +159,6 @@ services:
     user: root
     command: >-
       python -m pg_nearest_city.scripts.generate_border_fixtures
-      --boundary-source naturalearth
       --db-host db
       --db-port 5432
       --db-name cities

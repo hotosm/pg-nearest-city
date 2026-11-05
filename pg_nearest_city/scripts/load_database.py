@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from pg_nearest_city.datasets.types import BoundarySource, CompressionAlgorithm
+from pg_nearest_city.datasets.types import CompressionAlgorithm
 from pg_nearest_city.db.data_import import Config, DataLoader
 from pg_nearest_city.db.settings import DBConnSettings
 
@@ -39,12 +39,6 @@ def parse_args():
         "--country",
         help="Filter to specific ISO 3166-1 alpha-2 country code (e.g. IT). "
         "Enclave dependencies are loaded automatically.",
-    )
-    parser.add_argument(
-        "--boundary-source",
-        choices=[s.value for s in BoundarySource],
-        default=BoundarySource.NATURAL_EARTH.value,
-        help="Country boundary data source (default: NaturalEarth)",
     )
     parser.add_argument(
         "--compression",
@@ -117,24 +111,19 @@ STEP_NAMES: list[str] = [
     "02_alter_db_params",
     "03_download_geonames",
     "04_download_boundaries",
-    "05_download_geoboundaries",
-    "06_clean_geonames",
-    "07_set_tables_unlogged",
-    "08_create_ref_tables",
-    "09_import_geonames",
-    "10_import_boundaries",
-    "11_create_btree_indices",
-    "12_apply_corrections",
-    "13_create_spatial_indices",
-    "14_merge_iso_countries",
-    "15_update_geometries",
-    "16_import_geoboundaries",
-    "17_simplify_geometry",
-    "18_vacuum_analyze",
-    "19_drop_temp_tables",
-    "20_set_tables_logged",
-    "21_add_constraints",
-    "22_export_data",
+    "05_clean_geonames",
+    "06_set_tables_unlogged",
+    "07_import_geonames",
+    "08_create_btree_indices",
+    "09_apply_corrections",
+    "10_create_spatial_indices",
+    "11_import_boundaries",
+    "12_simplify_geometry",
+    "13_vacuum_analyze",
+    "14_drop_temp_tables",
+    "15_set_tables_logged",
+    "16_add_constraints",
+    "17_export_data",
 ]
 
 
@@ -160,7 +149,6 @@ def main() -> None:
     dataloader = DataLoader(
         config=Config(
             db_conn_settings=conn_settings,
-            boundary_source=BoundarySource(args.boundary_source),
             cache_dir=Path(args.cache_dir),
             cache_files=not args.no_cache,
             compression=CompressionAlgorithm(args.compression),
@@ -183,29 +171,19 @@ def main() -> None:
             {},
             pass_conn=False,
         ),
-        Step(
-            "05_download_geoboundaries",
-            dataloader._download_geoboundaries,
-            {},
-            pass_conn=False,
-        ),
-        Step("06_clean_geonames", dataloader._clean_geonames, {}, pass_conn=False),
-        Step("07_set_tables_unlogged", dataloader._alter_table_params, {"init": True}),
-        Step("08_create_ref_tables", dataloader._create_temp_reference_tables, {}),
-        Step("09_import_geonames", dataloader._import_geonames, {}),
-        Step("10_import_boundaries", dataloader._import_country_boundaries, {}),
-        Step("11_create_btree_indices", dataloader._create_btree_indices, {}),
-        Step("12_apply_corrections", dataloader._cleanup_datasets, {}),
-        Step("13_create_spatial_indices", dataloader._create_spatial_indices, {}),
-        Step("14_merge_iso_countries", dataloader._merge_countries_to_iso_defs, {}),
-        Step("15_update_geometries", dataloader._update_country_geometries, {}),
-        Step("16_import_geoboundaries", dataloader._import_geoboundary_corrections, {}),
-        Step("17_simplify_geometry", dataloader._simplify_country_table, {}),
-        Step("18_vacuum_analyze", dataloader._vacuum_and_analyze_db, {"full": True}),
-        Step("19_drop_temp_tables", dataloader._drop_temp_tables, {}),
-        Step("20_set_tables_logged", dataloader._alter_table_params, {"init": False}),
-        Step("21_add_constraints", dataloader._alter_post_tables, {}),
-        Step("22_export_data", dataloader._export_data, {}, pass_conn=False),
+        Step("05_clean_geonames", dataloader._clean_geonames, {}, pass_conn=False),
+        Step("06_set_tables_unlogged", dataloader._alter_table_params, {"init": True}),
+        Step("07_import_geonames", dataloader._import_geonames, {}),
+        Step("08_create_btree_indices", dataloader._create_btree_indices, {}),
+        Step("09_apply_corrections", dataloader._cleanup_datasets, {}),
+        Step("10_create_spatial_indices", dataloader._create_spatial_indices, {}),
+        Step("11_import_boundaries", dataloader._import_boundaries, {}),
+        Step("12_simplify_geometry", dataloader._simplify_country_table, {}),
+        Step("13_vacuum_analyze", dataloader._vacuum_and_analyze_db, {"full": True}),
+        Step("14_drop_temp_tables", dataloader._drop_temp_tables, {}),
+        Step("15_set_tables_logged", dataloader._alter_table_params, {"init": False}),
+        Step("16_add_constraints", dataloader._alter_post_tables, {}),
+        Step("17_export_data", dataloader._export_data, {}, pass_conn=False),
     ]
 
     if args.clean:

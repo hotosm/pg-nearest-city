@@ -61,7 +61,8 @@ packages = ["pg_nearest_city"]
 include = [
     "pg_nearest_city/data/country.csv.xz*",
     "pg_nearest_city/data/geocoding.csv.xz",
-    "pg_nearest_city/db/iso-3166-1.csv.gz",
+    "pg_nearest_city/db/country_names.csv",
+    "pg_nearest_city/db/boundary_overrides.csv.xz",
 ]
 
 [tool.ruff]

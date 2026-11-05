@@ -1,20 +1,11 @@
-from pg_nearest_city.datasets.sources import GEONAMES_URLCONFIG, OVERPASS_URLCONFIG
-from pg_nearest_city.datasets.types import (
-    OverpassItemType,
-    OverpassQL,
-    OverpassQueryBuilder,
-    OverpassType,
-)
+from pg_nearest_city.datasets.sources import GEONAMES_URLCONFIG
 from pg_nearest_city.datasets.url_config import URLConfig
 
-op = OverpassQL(
-    item_type=[OverpassItemType.DEFAULT_INPUT, OverpassItemType.RECURSE_DOWN],
-    queries=[OverpassQueryBuilder(OverpassType.REL).name("foobar").build()],
-)
+NO_SUFFIX_URLCONFIG = URLConfig(url="https://x/api/interpreter")
 
 
 def test_urlconfig_parsing_no_suffix_passes():
-    conf = OVERPASS_URLCONFIG
+    conf = NO_SUFFIX_URLCONFIG
     assert conf.filename == "interpreter"
     assert conf.slug == "interpreter"
 
@@ -44,13 +35,13 @@ def test_urlconfig_parsing_duplicate_suffixes_passes():
 
 
 def test_urlconfig_parsing_suffix_override_passes():
-    conf = OVERPASS_URLCONFIG.with_overrides(target_filetype=op.filetype)
+    conf = NO_SUFFIX_URLCONFIG.with_overrides(target_filetype="osm")
     assert conf.filename == "interpreter.osm"
     assert conf.slug == "interpreter"
 
 
 def test_urlconfig_parsing_filename_override_passes():
-    conf = OVERPASS_URLCONFIG.with_overrides(target_filename="foobar")
+    conf = NO_SUFFIX_URLCONFIG.with_overrides(target_filename="foobar")
     assert conf.filename == "foobar"
     assert conf.slug == "interpreter"
 

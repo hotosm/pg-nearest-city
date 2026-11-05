@@ -227,10 +227,42 @@ class Geocoding(BaseTable):
         )
 
 
-class TmpIso3166(BaseTable):
-    """ISO3166-1 table class - used for initial data load."""
+class TmpCgaz(BaseTable):
+    """CGAZ country polygons, created by GDAL on import."""
 
-    name = "tmp_iso3166"
+    name = "tmp_cgaz"
+    drop_first = True
+    is_externally_defined = True
+    is_for_data_load = True
+    is_temp = True
+    is_unlogged = True
+
+
+class TmpCountryNames(BaseTable):
+    """Country codes and names, loaded from country_names.csv."""
+
+    name = "tmp_country_names"
+    drop_first = True
+    is_for_data_load = True
+    is_temp = True
+    is_unlogged = True
+
+    @classmethod
+    def create_sql(cls) -> str:
+        """Return the CREATE TABLE SQL for this table."""
+        return f"""
+        CREATE TABLE {cls.name} (
+          alpha2 CHAR(2) PRIMARY KEY,
+          alpha3 CHAR(3) NOT NULL UNIQUE,
+          name TEXT NOT NULL
+        )
+        """
+
+
+class TmpBoundaryOverrides(BaseTable):
+    """Shapes that replace CGAZ, loaded from boundary_overrides.csv.xz."""
+
+    name = "tmp_boundary_overrides"
     drop_first = True
     is_for_data_load = True
     is_temp = True
@@ -242,156 +274,9 @@ class TmpIso3166(BaseTable):
         return f"""
         CREATE TABLE {cls.name} (
           alpha2 CHAR(2) NOT NULL,
-          alpha3 CHAR(3) NOT NULL,
-          _numeric CHAR(3) NOT NULL,
-          name TEXT NOT NULL,
-          CONSTRAINT {cls.name}_pkey PRIMARY KEY (alpha3)
+          geom GEOMETRY(MultiPolygon,4326) NOT NULL
         )
         """
-
-
-class TmpCountryBoundsAdm0(BaseTable):
-    """Temporary table for ADM0-level country boundaries."""
-
-    name = "tmp_country_bounds_adm0"
-    drop_first = True
-    is_externally_defined = True
-    is_for_data_load = True
-    is_temp = True
-    is_unlogged = True
-
-    @classmethod
-    def get_indices(cls) -> tuple[Index, ...]:
-        """Return index definitions for this table."""
-        return (
-            Index(
-                tbl_name=cls.name,
-                col_names=["country"],
-                index_type=IndexType.BTREE,
-            ),
-            Index(
-                tbl_name=cls.name,
-                col_names=["gid0"],
-                index_type=IndexType.BTREE,
-            ),
-            Index(
-                tbl_name=cls.name,
-                col_names=["geom"],
-                index_type=IndexType.GIST,
-            ),
-        )
-
-
-class TmpCountryBoundsAdm1(BaseTable):
-    """Temporary table for ADM1-level country boundaries."""
-
-    name = "tmp_country_bounds_adm1"
-    drop_first = True
-    is_externally_defined = True
-    is_for_data_load = True
-    is_temp = True
-    is_unlogged = True
-
-    @classmethod
-    def get_indices(cls) -> tuple[Index, ...]:
-        """Return index definitions for this table."""
-        return (
-            Index(
-                tbl_name=cls.name,
-                col_names=["parent_gid0"],
-                index_type=IndexType.BTREE,
-            ),
-            Index(
-                tbl_name=cls.name,
-                col_names=["geom"],
-                index_type=IndexType.GIST,
-            ),
-        )
-
-
-class TmpCountryStaging(BaseTable):
-    """Temporary staging table for merged country boundary data."""
-
-    name = "tmp_country_staging"
-    drop_first = True
-    is_externally_defined = True
-    is_for_data_load = True
-    is_temp = True
-    is_unlogged = False
-
-
-class TmpNonIsoAdm0(BaseTable):
-    """Temporary table for non-ISO ADM0-level territories."""
-
-    name = "tmp_noniso_adm0"
-    drop_first = True
-    is_for_data_load = True
-    is_temp = True
-    is_unlogged = True
-
-    @classmethod
-    def create_sql(cls) -> str:
-        """Return the CREATE TABLE SQL for this table."""
-        return f"""
-        CREATE TABLE {cls.name} (
-            gid0 TEXT NOT NULL,
-            name TEXT NOT NULL,
-            geom GEOMETRY(MultiPolygon, 4326) NOT NULL,
-            CONSTRAINT {cls.name}_pkey PRIMARY KEY (gid0)
-        )"""
-
-    @classmethod
-    def get_indices(cls) -> tuple[Index, ...]:
-        """Return index definitions for this table."""
-        return (
-            Index(
-                tbl_name=cls.name,
-                col_names=["geom"],
-                index_type=IndexType.GIST,
-            ),
-        )
-
-
-class TmpNonIsoGid0Parent(BaseTable):
-    """Temporary table mapping non-ISO GID0 codes to their parent GID0."""
-
-    name = "tmp_noniso_gid0_parent"
-    drop_first = True
-    is_for_data_load = True
-    is_temp = True
-    is_unlogged = True
-
-    @classmethod
-    def create_sql(cls) -> str:
-        """Return the CREATE TABLE SQL for this table."""
-        return f"""
-        CREATE TABLE {cls.name} (
-            gid0 TEXT NOT NULL,
-            parent_gid0 TEXT NOT NULL,
-            CONSTRAINT {cls.name}_pkey PRIMARY KEY (gid0)
-        )"""
-
-
-class TmpPromotedAdm1ToGid0(BaseTable):
-    """Temporary table for ADM1 regions promoted to GID0-level entities."""
-
-    name = "tmp_promoted_adm1_to_gid0"
-    drop_first = True
-    is_for_data_load = True
-    is_temp = True
-    is_unlogged = True
-
-    @classmethod
-    def create_sql(cls) -> str:
-        """Return the CREATE TABLE SQL for this table."""
-        return f"""
-        CREATE TABLE {cls.name} (
-            gid0 TEXT NOT NULL,
-            gid1 TEXT NOT NULL,
-            name TEXT NOT NULL,
-            parent_gid0 TEXT NOT NULL,
-            CONSTRAINT {cls.name}_pkey PRIMARY KEY (gid1)
-        )"""
 
 
 def get_tables(filters: list[dict[str, Any]] | None = None) -> list[type[BaseTable]]:

@@ -71,7 +71,6 @@ def test_parse_args_defaults_country_pair_to_empty_for_global_discovery():
     assert args.country_pair == []
     assert args.probes_output == BORDER_PROBE_FIXTURE_PATH
     assert args.cache_dir == Path("/data/cache")
-    assert args.boundary_source == "naturalearth"
 
 
 def test_parse_args_accepts_probe_output_override():
@@ -109,8 +108,7 @@ def test_probe_row_as_csv_row_matches_header_order():
 
     csv_row = row.as_csv_row()
 
-    assert len(csv_row) == len(PROBE_CSV_HEADER)
-    assert dict(zip(PROBE_CSV_HEADER, csv_row)) == {
+    assert dict(zip(PROBE_CSV_HEADER, csv_row, strict=True)) == {
         "pair": "FR/MC",
         "source_country": "MC",
         "expected_alpha2": "MC",

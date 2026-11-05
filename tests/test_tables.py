@@ -11,11 +11,8 @@ from pg_nearest_city.db.tables import (
     Geocoding,
     Index,
     IndexType,
-    TmpCountryBoundsAdm0,
-    TmpIso3166,
-    TmpNonIsoAdm0,
-    TmpNonIsoGid0Parent,
-    TmpPromotedAdm1ToGid0,
+    TmpCgaz,
+    TmpCountryNames,
     create_dependency_graph,
     get_tables,
     get_tables_in_creation_order,
@@ -61,9 +58,9 @@ class TestBaseTable:
         assert "depends_on" in attrs
 
     def test_create_sql_externally_defined_raises(self):
-        assert TmpCountryBoundsAdm0.is_externally_defined is True
+        assert TmpCgaz.is_externally_defined is True
         with pytest.raises(NotImplementedError):
-            TmpCountryBoundsAdm0.create_sql()
+            TmpCgaz.create_sql()
 
     def test_create_sql_base_returns_empty(self):
         assert BaseTable.create_sql() == ""
@@ -105,29 +102,16 @@ class TestTableSubclasses:
         assert CountryInit.is_temp is True
         assert CountryInit.is_unlogged is True
 
-    def test_tmp_iso3166_create_sql(self):
-        sql = TmpIso3166.create_sql()
-        assert "tmp_iso3166" in sql
+    def test_tmp_country_names_create_sql(self):
+        sql = TmpCountryNames.create_sql()
+        assert "tmp_country_names" in sql
         assert "alpha3 CHAR(3)" in sql
-
-    def test_tmp_noniso_adm0_create_sql(self):
-        sql = TmpNonIsoAdm0.create_sql()
-        assert "tmp_noniso_adm0" in sql
-        assert "MultiPolygon" in sql
-
-    def test_tmp_noniso_gid0_parent_create_sql(self):
-        sql = TmpNonIsoGid0Parent.create_sql()
-        assert "parent_gid0" in sql
-
-    def test_tmp_promoted_adm1_create_sql(self):
-        sql = TmpPromotedAdm1ToGid0.create_sql()
-        assert "gid1" in sql
 
 
 class TestGetTables:
     def test_unfiltered_returns_all(self):
         tables = get_tables()
-        assert len(tables) >= 8
+        assert len(tables) >= 6
         names = {t.name for t in tables}
         assert "country" in names
         assert "geocoding" in names

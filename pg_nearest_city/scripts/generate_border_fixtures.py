@@ -1,4 +1,4 @@
-"""Offline entry point for regenerating border fixture seeds."""
+"""Regenerate the border probe test fixture."""
 
 import argparse
 import csv
@@ -14,7 +14,6 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from pg_nearest_city.datasets.types import BoundarySource
 from pg_nearest_city.db.settings import DBConnSettings
 
 
@@ -30,7 +29,7 @@ PROBE_RING_DISTANCES_M = (100, 500, 1000)
 PROBE_STATUSES = ("ok", "ambiguous", "unplaceable")
 BORDER_PROBE_FIXTURE_PATH = Path("tests/fixtures/border_country_probes.csv")
 
-# Cheap geometry prefilters before exact geography distance checks.
+# Prefilters before exact distance checks.
 SEAM_BBOX_DEG = 0.25
 PAIR_BBOX_DEG = 0.15
 
@@ -60,24 +59,23 @@ CountryPair = tuple[str, str]
 
 @dataclass(frozen=True, slots=True)
 class CountryOracleRef:
-    """Reference to the disposable pre-simplification oracle table."""
+    """Scratch table of pre-simplification country geometry."""
 
     schema: str
     table: str = ORACLE_TABLE
 
     @property
     def qualified_name(self) -> str:
-        """Return a human-readable qualified table name."""
+        """Return the schema-qualified table name."""
         return f"{self.schema}.{self.table}"
 
 
 @dataclass(frozen=True, slots=True)
 class BorderFixtureRequest:
-    """Input bundle for one offline border fixture generator run."""
+    """Generator inputs."""
 
     db: DBConnSettings
     cache_dir: Path
-    boundary_source: BoundarySource
     country_pairs: frozenset[CountryPair]
     max_pairs_per_country_pair: int
     ring_distances_m: tuple[int, ...]
@@ -85,7 +83,7 @@ class BorderFixtureRequest:
 
 @dataclass(frozen=True, slots=True)
 class ProbeRow:
-    """Named seam-relative probe row produced by the generator."""
+    """One generated probe row."""
 
     pair: str
     source_country: str
@@ -107,7 +105,7 @@ class ProbeRow:
     status: str
 
     def as_csv_row(self) -> tuple:
-        """Return the row in committed `PROBE_CSV_HEADER` order."""
+        """Return values in `PROBE_CSV_HEADER` order."""
         return (
             self.pair,
             self.source_country,
@@ -132,7 +130,7 @@ class ProbeRow:
 
 @dataclass(frozen=True, slots=True)
 class PairSummary:
-    """Per-country-pair discovery and probe-status summary for reporting."""
+    """Discovery and probe counts for one country pair."""
 
     pair: str
     discovered_rows: int
@@ -141,12 +139,6 @@ class PairSummary:
 
 @dataclass(frozen=True, slots=True)
 class _DiscoveredPair:
-    """Named internal pair-discovery row.
-
-    Not a public output of the module; only feeds probe-row generation and
-    summary derivation inside `_build_result`.
-    """
-
     pair: str
     country_a: str
     country_b: str
@@ -164,7 +156,7 @@ class _DiscoveredPair:
 
 @dataclass(frozen=True, slots=True)
 class BorderFixtureResult:
-    """Output bundle from one offline border fixture generator run."""
+    """Generator outputs."""
 
     probe_rows: list[ProbeRow]
     pair_summaries: list[PairSummary]
@@ -190,12 +182,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path("/data/cache"),
         help="Directory containing cached source datasets and dataset_registry.json",
-    )
-    parser.add_argument(
-        "--boundary-source",
-        choices=[s.value for s in BoundarySource],
-        default=BoundarySource.NATURAL_EARTH.value,
-        help="Boundary source to use when rebuilding the pre-simplification oracle",
     )
     parser.add_argument(
         "--probes-output",
@@ -225,13 +211,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _quote_gdal_pg_value(value: object) -> str:
-    """Quote a value for a GDAL PostgreSQL keyword connection string."""
     escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
     return f"'{escaped}'"
 
 
 def gdal_pg_conn_string_for_schema(settings: DBConnSettings, schema: str) -> str:
-    """Build a GDAL PostgreSQL connection string scoped to a scratch schema."""
+    """Build a GDAL connection string for a scratch schema."""
     parts = {
         "host": settings.host,
         "port": settings.port,
@@ -246,7 +231,7 @@ def gdal_pg_conn_string_for_schema(settings: DBConnSettings, schema: str) -> str
 
 
 def make_oracle_schema_name(prefix: str = ORACLE_SCHEMA_PREFIX) -> str:
-    """Return a process-scoped scratch schema name for oracle reconstruction."""
+    """Return a per-process scratch schema name."""
     return f"{prefix}_{os.getpid()}"
 
 
@@ -276,7 +261,6 @@ def _drop_oracle_schema(conn: psycopg.Connection, schema: str) -> None:
 
 
 def _ensure_runtime_geocoding_available(conn: psycopg.Connection) -> None:
-    """Fail early if the loader-derived geocoding table is absent."""
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass('public.geocoding') AS table_name")
         row = cur.fetchone()
@@ -288,68 +272,19 @@ def _ensure_runtime_geocoding_available(conn: psycopg.Connection) -> None:
 
 
 def _create_oracle_working_tables(conn: psycopg.Connection) -> None:
-    """Create only the loader scratch tables needed to build country_init."""
     from pg_nearest_city.db.tables import (
         CountryInit,
-        TmpIso3166,
-        TmpNonIsoAdm0,
-        TmpNonIsoGid0Parent,
-        TmpPromotedAdm1ToGid0,
+        TmpBoundaryOverrides,
+        TmpCountryNames,
     )
 
-    for table in (
-        CountryInit,
-        TmpIso3166,
-        TmpNonIsoAdm0,
-        TmpNonIsoGid0Parent,
-        TmpPromotedAdm1ToGid0,
-    ):
+    for table in (CountryInit, TmpBoundaryOverrides, TmpCountryNames):
         with conn.cursor() as cur:
             cur.execute(table.create_sql())
     conn.commit()
 
 
-def _create_oracle_indices(conn: psycopg.Connection) -> None:
-    """Create only data-load scratch indexes inside the oracle schema."""
-    from pg_nearest_city.db.tables import get_tables
-
-    with conn.cursor() as cur:
-        for table in get_tables(filters=[{"is_for_data_load": True}]):
-            for index in table.get_indices():
-                if index.is_post_load:
-                    cur.execute(index.index_def)
-    conn.commit()
-
-
-def _apply_boundary_source_corrections(
-    conn: psycopg.Connection, boundary_source: BoundarySource
-) -> None:
-    """Apply boundary-table corrections without mutating runtime geocoding rows."""
-    from pg_nearest_city.db.corrections import (
-        GADM_DATA_CORRECTIONS,
-        NE_DATA_CORRECTIONS,
-    )
-    from pg_nearest_city.db.data_cleanup import make_queries
-
-    rows = (
-        GADM_DATA_CORRECTIONS
-        if boundary_source == BoundarySource.GADM
-        else NE_DATA_CORRECTIONS
-    )
-    with conn.cursor() as cur:
-        for correction, query in zip(rows, make_queries(rows), strict=False):
-            cur.execute(query)
-            if cur.rowcount > correction.result_limit:
-                conn.rollback()
-                raise RuntimeError(
-                    f"Correction affected too many rows: {correction.description} "
-                    f"expected <= {correction.result_limit}, got {cur.rowcount}"
-                )
-    conn.commit()
-
-
 def _materialize_oracle_table(conn: psycopg.Connection) -> None:
-    """Copy pre-simplification country_init geometry into oracle table."""
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(ORACLE_TABLE))
@@ -379,17 +314,13 @@ def rebuild_pre_simplification_country_oracle(
     *,
     conn_settings: DBConnSettings,
     cache_dir: Path,
-    boundary_source: BoundarySource,
     schema: str | None = None,
     logger: logging.Logger | None = None,
 ) -> tuple[CountryOracleRef, psycopg.Connection]:
-    """Rebuild the pre-simplification country oracle in scratch state.
+    """Rebuild unsimplified country geometry in a scratch schema.
 
-    The loader pipeline is reused for source import, ISO sovereignty merging,
-    GeoBoundaries/Overpass corrections, and overlap resolution, but the flow
-    stops before `SIMPLIFY_COUNTRY` and never writes to the shipped runtime
-    `public.country` table.  A scratch schema is used because GDAL imports need
-    cross-connection visibility; callers must drop it when done.
+    GDAL imports need cross-connection visibility, so temp tables won't work.
+    Callers must drop the schema.
     """
     from pg_nearest_city.db.data_import import Config, DataLoader
 
@@ -400,7 +331,6 @@ def rebuild_pre_simplification_country_oracle(
             db_conn_settings=conn_settings,
             cache_dir=cache_dir,
             cache_files=True,
-            boundary_source=boundary_source,
         ),
         logger=log,
     )
@@ -415,13 +345,7 @@ def rebuild_pre_simplification_country_oracle(
 
         _ensure_runtime_geocoding_available(conn)
         _create_oracle_working_tables(conn)
-        loader._create_temp_reference_tables(conn)
-        loader._import_country_boundaries(conn)
-        _create_oracle_indices(conn)
-        _apply_boundary_source_corrections(conn, boundary_source)
-        loader._merge_countries_to_iso_defs(conn)
-        loader._update_country_geometries(conn)
-        loader._import_geoboundary_corrections(conn)
+        loader._import_boundaries(conn)
         _materialize_oracle_table(conn)
     except Exception:
         _drop_oracle_schema(conn, oracle_schema)
@@ -438,17 +362,15 @@ def pre_simplification_country_oracle(
     *,
     conn_settings: DBConnSettings,
     cache_dir: Path,
-    boundary_source: BoundarySource,
     logger: logging.Logger | None = None,
 ) -> Iterator[CountryOracleRef]:
-    """Context manager that rebuilds and then explicitly drops oracle scratch state."""
+    """Yield a rebuilt oracle and drop it on exit."""
     ref: CountryOracleRef | None = None
     conn: psycopg.Connection | None = None
     try:
         ref, conn = rebuild_pre_simplification_country_oracle(
             conn_settings=conn_settings,
             cache_dir=cache_dir,
-            boundary_source=boundary_source,
             logger=logger,
         )
         yield ref
@@ -459,13 +381,7 @@ def pre_simplification_country_oracle(
 
 
 class BorderFixtureGenerator:
-    """Single entry point that owns the full border fixture generation flow.
-
-    The generator owns the pre-simplification country oracle rebuild, the scratch-schema
-    lifecycle, border-pair discovery, and seam-probe generation.  Discovered
-    border pairs remain an internal step used to feed probe generation and are
-    not part of the public surface.
-    """
+    """Generate border probes from the unsimplified country oracle."""
 
     def __init__(
         self,
@@ -479,13 +395,12 @@ class BorderFixtureGenerator:
         self._logger = logger or logging.getLogger("border_fixture_generator")
 
     def run(self) -> BorderFixtureResult:
-        """Run the full sequence and return the named result bundle."""
+        """Generate probes and return the result."""
         req = self._request
         country_pairs = set(req.country_pairs)
         with pre_simplification_country_oracle(
             conn_settings=req.db,
             cache_dir=req.cache_dir,
-            boundary_source=req.boundary_source,
             logger=self._logger,
         ) as oracle:
             self._logger.info(
@@ -520,7 +435,6 @@ class BorderFixtureGenerator:
         country_pairs: set[CountryPair] | None = None,
         max_pairs_per_country_pair: int = MAX_PAIRS_PER_COUNTRY_PAIR,
     ) -> list[_DiscoveredPair]:
-        """Discover nearby cross-border city pairs using runtime-country seams."""
         if max_pairs_per_country_pair < 1:
             raise ValueError("max_pairs_per_country_pair must be >= 1")
 
@@ -535,8 +449,6 @@ class BorderFixtureGenerator:
             GROUP BY alpha2
             """
         )
-        # tmp_normalized_countries kept materialized: self-joined in the seam build
-        # below and the GIST/alpha2 indexes materially help that self-join.
         cur.execute(
             """
             CREATE INDEX tmp_normalized_countries_alpha2_idx
@@ -551,10 +463,6 @@ class BorderFixtureGenerator:
         )
         cur.execute("ANALYZE tmp_normalized_countries")
 
-        # Inline the optional country-pair restriction as a VALUES list so the
-        # filter rides along with the seam build rather than a separate temp
-        # table.  Pairs come from `normalize_country_pair`, which already
-        # validates each side as a 2-char alpha-2 code.
         pair_join_sql: sql.Composable = sql.SQL("")
         if country_pairs:
             pair_values = sql.SQL(", ").join(
@@ -579,7 +487,9 @@ class BorderFixtureGenerator:
                         ST_LineMerge(
                             ST_UnaryUnion(
                                 ST_CollectionExtract(
-                                    ST_Intersection(ST_Boundary(a.geom), ST_Boundary(b.geom)),
+                                    ST_Intersection(
+                                        ST_Boundary(a.geom), ST_Boundary(b.geom)
+                                    ),
                                     2
                                 )
                             )
@@ -604,9 +514,6 @@ class BorderFixtureGenerator:
                 min_seam_length=sql.Literal(MIN_SEAM_LENGTH_M),
             )
         )
-        # tmp_valid_seams kept materialized: read again later by
-        # _generate_seam_probe_rows on the same connection, so the seam build
-        # cost is amortized across both stages.
         cur.execute(
             """
             CREATE INDEX tmp_valid_seams_pair_idx
@@ -622,9 +529,6 @@ class BorderFixtureGenerator:
         cur.execute("ANALYZE tmp_valid_seams")
 
         cur.execute("DROP TABLE IF EXISTS tmp_discovered_border_city_pairs")
-        # tmp_discovered_border_city_pairs kept materialized: probe generation
-        # reads it three times (seed CTE plus both halves of the UNION ALL),
-        # so inlining would force the candidate set to be recomputed.
         cur.execute(
             f"""
             CREATE TEMP TABLE tmp_discovered_border_city_pairs ON COMMIT DROP AS
@@ -643,7 +547,9 @@ class BorderFixtureGenerator:
                 JOIN geocoding g
                   ON g.country = s.country_a
                  AND g.geom && ST_Expand(s.seam_geom, {SEAM_BBOX_DEG})
-                 AND ST_DWithin(g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M})
+                 AND ST_DWithin(
+                     g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M}
+                 )
             ),
             seam_cities_b AS (
                 SELECT
@@ -657,7 +563,9 @@ class BorderFixtureGenerator:
                 JOIN geocoding g
                   ON g.country = s.country_b
                  AND g.geom && ST_Expand(s.seam_geom, {SEAM_BBOX_DEG})
-                 AND ST_DWithin(g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M})
+                 AND ST_DWithin(
+                     g.geom::geography, s.seam_geom::geography, {SEAM_RADIUS_M}
+                 )
             ),
             candidate_pairs AS (
                 SELECT DISTINCT
@@ -686,7 +594,9 @@ class BorderFixtureGenerator:
                     WHERE b.country_a = a.country_a
                       AND b.country_b = a.country_b
                       AND b.geom && ST_Expand(a.geom, {PAIR_BBOX_DEG})
-                      AND ST_DWithin(a.geom::geography, b.geom::geography, {PAIR_RADIUS_M})
+                      AND ST_DWithin(
+                          a.geom::geography, b.geom::geography, {PAIR_RADIUS_M}
+                      )
                     ORDER BY b.geom <-> a.geom
                     LIMIT {NEAREST_CANDIDATES_PER_CITY}
                 ) b ON TRUE
@@ -758,19 +668,11 @@ class BorderFixtureGenerator:
         oracle: CountryOracleRef,
         ring_distances_m: Iterable[int] = PROBE_RING_DISTANCES_M,
     ) -> list[ProbeRow]:
-        """Generate seam-relative inward probe rows from discovered seed pairs.
-
-        `_discover_border_city_pairs` must have been called first on the same
-        connection so the temporary seam and selected-pair tables exist.
-        """
+        """Requires temp tables from `_discover_border_city_pairs`."""
         distances = sorted({int(distance) for distance in ring_distances_m})
         if not distances or distances[0] <= 0:
             raise ValueError("ring_distances_m must contain positive distances")
 
-        # Inline the ring distances as a VALUES list rather than a scratch
-        # table.  The CROSS JOIN consumes them exactly once and the final
-        # SELECT orders by ring_distance_m, so row order is independent of the
-        # VALUES order.
         ring_distance_values = sql.SQL(", ").join(
             sql.SQL("({})").format(sql.Literal(distance)) for distance in distances
         )
@@ -822,7 +724,10 @@ class BorderFixtureGenerator:
                         ) AS source_normal
                     FROM source_seeds seed
                     JOIN tmp_valid_seams seam
-                      ON seam.country_a = LEAST(seed.source_country, seed.neighbor_country)
+                      ON seam.country_a = LEAST(
+                         seed.source_country,
+                         seed.neighbor_country
+                     )
                      AND seam.country_b = GREATEST(
                          seed.source_country,
                          seed.neighbor_country
@@ -855,7 +760,9 @@ class BorderFixtureGenerator:
                             FROM {oracle} source_country
                             WHERE source_country.alpha2 = candidate.source_country
                               AND candidate.candidate_geom IS NOT NULL
-                              AND ST_Covers(source_country.geom, candidate.candidate_geom)
+                              AND ST_Covers(
+                                  source_country.geom, candidate.candidate_geom
+                              )
                         ) AS covers_source
                     FROM candidates candidate
                 ),
@@ -879,7 +786,8 @@ class BorderFixtureGenerator:
                         (ARRAY_AGG(
                             candidate.candidate_geom
                             ORDER BY candidate.direction_index
-                        ) FILTER (WHERE candidate.covers_source))[1] AS accepted_probe_geom
+                        ) FILTER (WHERE candidate.covers_source))[1]
+                            AS accepted_probe_geom
                     FROM classified_candidates candidate
                     GROUP BY
                         candidate.seed_id,
@@ -959,7 +867,6 @@ def _build_result(
     pair_rows: list[_DiscoveredPair],
     probe_rows: list[ProbeRow],
 ) -> BorderFixtureResult:
-    """Derive named summary data from the internal pair/probe row sequences."""
     discovered_counts: Counter[str] = Counter(pair.pair for pair in pair_rows)
     status_counts_by_pair: dict[str, Counter[str]] = {}
     for probe in probe_rows:
@@ -1005,7 +912,7 @@ def _build_result(
 
 
 def normalize_country_pair(raw: str) -> CountryPair:
-    """Parse a country-pair CLI value into sorted alpha-2 codes."""
+    """Parse a pair like IT/SI into sorted alpha-2 codes."""
     parts = [p.strip().upper() for p in raw.split("/", 1)]
     if len(parts) != 2 or not all(len(p) == 2 for p in parts):
         raise ValueError(f"Invalid country pair {raw!r}; expected like IT/SI")
@@ -1014,24 +921,24 @@ def normalize_country_pair(raw: str) -> CountryPair:
 
 
 def normalize_country_pairs(raw_pairs: Iterable[str]) -> set[CountryPair]:
-    """Parse multiple country-pair CLI values."""
+    """Parse multiple country pairs."""
     return {normalize_country_pair(raw) for raw in raw_pairs}
 
 
 def format_country_pair(pair: CountryPair) -> str:
-    """Format a normalized country pair for display."""
+    """Format a country pair like IT/SI."""
     return f"{pair[0]}/{pair[1]}"
 
 
 def format_probe_status_summary(status_counts: Mapping[str, int]) -> str:
-    """Format status counts in stable status order for generator summaries."""
+    """Format status counts in a stable order."""
     return ", ".join(
         f"{status}={status_counts.get(status, 0)}" for status in PROBE_STATUSES
     )
 
 
 def write_probe_rows(output: Path, rows: list[tuple]) -> None:
-    """Write generated seam-relative probe rows to a CSV file."""
+    """Write probe rows to CSV."""
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh, lineterminator="\n")
@@ -1040,7 +947,6 @@ def write_probe_rows(output: Path, rows: list[tuple]) -> None:
 
 
 def _print_result_summary(result: BorderFixtureResult) -> None:
-    """Print operator-facing summary derived from the generator's named result."""
     if not result.requested_country_pairs:
         for summary in result.pair_summaries:
             print(f"{summary.pair}: {summary.discovered_rows} discovered city pairs")
@@ -1057,7 +963,7 @@ def _print_result_summary(result: BorderFixtureResult) -> None:
 
 
 def main() -> None:
-    """Run the offline border fixture seed generator."""
+    """Run the generator."""
     args = parse_args()
     if args.max_pairs_per_country_pair < 1:
         raise SystemExit("--max-pairs-per-country-pair must be >= 1")
@@ -1084,7 +990,6 @@ def main() -> None:
     request = BorderFixtureRequest(
         db=conn_settings,
         cache_dir=args.cache_dir,
-        boundary_source=BoundarySource(args.boundary_source),
         country_pairs=frozenset(country_pairs),
         max_pairs_per_country_pair=args.max_pairs_per_country_pair,
         ring_distances_m=PROBE_RING_DISTANCES_M,

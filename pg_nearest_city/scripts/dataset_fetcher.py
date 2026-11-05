@@ -8,7 +8,6 @@ from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pg_nearest_city.datasets.geoboundaries import GeoBoundaryConfig
 from pg_nearest_city.datasets.registry import DatasetRegistry, GeoSource
 from pg_nearest_city.datasets.types import DownloadOutcome, ZipFileStatus
 from pg_nearest_city.scripts.helpers import make_file_link
@@ -145,33 +144,3 @@ def fetch_and_extract_dataset(
         if extract_dataset(src_file=file_path, dst_dir=temp_dir)
         else DownloadOutcome.FAILED
     )
-
-
-def fetch_geoboundaries(
-    gb_config: GeoBoundaryConfig,
-    cache_dir: Path,
-    registry: DatasetRegistry,
-    logger: logging.Logger | None = None,
-) -> dict[str, tuple[DownloadOutcome, Path | None]]:
-    """Fetch all configured geoboundary targets.
-
-    Unlike fetch_and_extract_dataset, geoboundaries are GeoJSON files
-    that don't need extraction.  The two-step API resolve → download
-    flow is handled internally by GeoBoundaryConfig.
-
-    Returns a dict keyed by registry key with (outcome, path) tuples.
-    """
-    logger = logger or logging.getLogger("dataset_fetcher")
-    logger.info("Fetching geoboundary datasets")
-
-    results = gb_config.ensure_cached(
-        cache_dir=cache_dir,
-        registry=registry,
-        logger=logger,
-    )
-
-    failed = [k for k, (o, _) in results.items() if o == DownloadOutcome.FAILED]
-    if failed:
-        logger.error(f"Failed to fetch geoboundaries: {', '.join(failed)}")
-
-    return results

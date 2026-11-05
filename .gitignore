@@ -9,6 +9,7 @@ NEWS
 
 # Miscellaneous
 .DS_Store
+.env
 
 # input files
 *.dbf
@@ -45,4 +46,4 @@ site
 
 # Allow package outputs
 !pg_nearest_city/data/*.xz
-
+!pg_nearest_city/db/*.xz

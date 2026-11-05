@@ -8,6 +8,8 @@ on:
 
 jobs:
   publish_to_pypi:
-    uses: hotosm/gh-workflows/.github/workflows/pypi_publish.yml@2.0.9
-    secrets:
-      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+    uses: hotosm/gh-workflows/.github/workflows/just.yml@4.1.0
+    with:
+      environment: "test"
+      command: "publish"
+    secrets: inherit

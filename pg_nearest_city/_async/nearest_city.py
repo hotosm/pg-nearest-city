@@ -189,7 +189,7 @@ class AsyncNearestCity:
     async def query(self, lon: float, lat: float) -> Optional[Location]:
         """Find the nearest city to the given coordinates.
 
-        Uses ST_Covers + lateral join on country and geocoding tables.
+        Finds the nearest country polygon, then the nearest city within it.
         Coordinates use (lon, lat) order, matching PostGIS convention
         where longitude is the X axis and latitude is Y.
 
@@ -221,8 +221,8 @@ class AsyncNearestCity:
                 return Location(
                     city=result[0],
                     country=result[1],
-                    lat=float(result[2]),
-                    lon=float(result[3]),
+                    lon=float(result[2]),
+                    lat=float(result[3]),
                     country_alpha3=result[4],
                     country_name=result[5],
                 )

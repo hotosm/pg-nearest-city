@@ -51,51 +51,6 @@ class CityDataset:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class PromotedTerritory:
-    """An ADM1 region to promote to a standalone ADM0-level country.
-
-    alpha3: ISO 3166-1 alpha-3 code for the promoted territory.
-    gid1: Key matching the gid1 column in tmp_country_bounds_adm1.
-    name: Country name.
-    parent_alpha3: Alpha-3 of the parent country whose polygon will be trimmed.
-    """
-
-    alpha3: str
-    gid1: str
-    name: str
-    parent_alpha3: str
-
-
-@dataclass(frozen=True, slots=True)
-class CountryDataset:
-    """Represents a dataset for countries.
-
-    alpha3_column: The column containing the ISO-3166-1 alpha-3 country code.
-    adm0_name_column: The column containing the country name.
-    adm1_column: The column containing the first administrative level code.
-    adm1_name_column: The column containing the first administrative level name.
-    """
-
-    alpha3_column: str = ""
-    adm0_name_column: str = ""
-    adm1_column: str = ""
-    adm1_name_column: str = ""
-    desired_order: list = field(default_factory=list)
-
-    def __post_init__(self):
-        if self.desired_order:
-            object.__setattr__(
-                self, "desired_order", [getattr(self, x) for x in self.desired_order]
-            )
-        else:
-            object.__setattr__(
-                self,
-                "desired_order",
-                [v for k, v in asdict(self).items() if v and k.endswith("_column")],
-            )
-
-
 # ---------------------------------------------------------------------------
 # GeoNames
 # ---------------------------------------------------------------------------
@@ -112,82 +67,12 @@ GEONAMES_DATASET = CityDataset(
 )
 
 # ---------------------------------------------------------------------------
-# GADM (baseline country boundaries)
+# geoBoundaries CGAZ (one gap-free global file of country boundaries)
 # ---------------------------------------------------------------------------
-GADM_URLCONFIG = URLConfig(
-    url="https://geodata.ucdavis.edu/gadm/gadm4.1/gadm_410-levels.zip",
+CGAZ_URLCONFIG = URLConfig(
+    url="https://github.com/wmgeolab/geoBoundaries/raw/main/releaseData/CGAZ/geoBoundariesCGAZ_ADM0.gpkg"
 )
 
-GADM_0_DATASET = CountryDataset(alpha3_column="GID_0", adm0_name_column="COUNTRY")
-
-GADM_1_DATASET = CountryDataset(
-    alpha3_column="GID_0",
-    adm1_column="GID_1",
-    adm0_name_column="COUNTRY",
-    adm1_name_column="NAME_1",
-)
-
-# ---------------------------------------------------------------------------
-# Natural Earth (country boundaries; alternative to GADM)
-# ---------------------------------------------------------------------------
-NE_COUNTRIES_URLCONFIG = URLConfig(
-    url="https://naciscdn.org/naturalearth/10m/cultural/ne_10m_admin_0_countries.zip"
-)
-
-NE_ADM1_URLCONFIG = URLConfig(
-    url="https://naciscdn.org/naturalearth/10m/cultural/ne_10m_admin_1_states_provinces.zip"
-)
-
-NE_COUNTRIES_DATASET = CountryDataset(
-    alpha3_column="ADM0_A3",
-    adm0_name_column="NAME",
-)
-
-NE_ADM1_DATASET = CountryDataset(
-    alpha3_column="adm0_a3",
-    adm1_column="adm1_code",
-    adm0_name_column="admin",
-    adm1_name_column="name",
-)
-
-# ---------------------------------------------------------------------------
-# ADM1-to-ADM0 promotions
-# Regions that exist only in the ADM1 layer of a given boundary source but
-# should be treated as standalone countries.  The gid1 values are
-# source-specific (GADM uses "CHN.HKG", NE uses "FRA-2000", etc.).
-# ---------------------------------------------------------------------------
-GADM_PROMOTED_TERRITORIES: list[PromotedTerritory] = [
-    PromotedTerritory(
-        alpha3="HKG", gid1="CHN.HKG", name="Hong Kong", parent_alpha3="CHN"
-    ),
-    PromotedTerritory(alpha3="MAC", gid1="CHN.MAC", name="Macau", parent_alpha3="CHN"),
-]
-
-NE_PROMOTED_TERRITORIES: list[PromotedTerritory] = [
-    PromotedTerritory(
-        alpha3="GLP", gid1="FRA-4603", name="Guadeloupe", parent_alpha3="FRA"
-    ),
-    PromotedTerritory(
-        alpha3="GUF", gid1="FRA-2000", name="French Guiana", parent_alpha3="FRA"
-    ),
-    PromotedTerritory(
-        alpha3="MTQ", gid1="FRA-1442", name="Martinique", parent_alpha3="FRA"
-    ),
-    PromotedTerritory(
-        alpha3="MYT", gid1="FRA-4602", name="Mayotte", parent_alpha3="FRA"
-    ),
-    PromotedTerritory(
-        alpha3="REU", gid1="FRA-4601", name="Réunion", parent_alpha3="FRA"
-    ),
-]
-
-# ---------------------------------------------------------------------------
-# Enclave dependencies
-# When loading a single country, these additional countries must also be
-# loaded so that RESOLVE_COUNTRY_OVERLAPS can correctly subtract enclave
-# geometries.  Keys and values are ISO 3166-1 alpha-3 codes.
-# The resolver walks the graph transitively (e.g. CHE → ITA → VAT, SMR).
-# ---------------------------------------------------------------------------
 ENCLAVE_DEPENDENCIES: dict[str, list[str]] = {
     "ITA": ["VAT", "SMR"],
     "FRA": ["MCO"],
@@ -220,11 +105,3 @@ def get_required_countries(target: str) -> set[str]:
         required.add(country)
         stack.extend(ENCLAVE_DEPENDENCIES.get(country, []))
     return required
-
-
-# ---------------------------------------------------------------------------
-# Overpass
-# Used as a fallback boundary source for territories absent from both
-# Natural Earth and GeoBoundaries.
-# ---------------------------------------------------------------------------
-OVERPASS_URLCONFIG = URLConfig(url="https://overpass.private.coffee/api/interpreter")
