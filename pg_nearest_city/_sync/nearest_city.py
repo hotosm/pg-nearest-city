@@ -6,6 +6,7 @@ from textwrap import dedent, fill
 from typing import Optional
 
 import psycopg
+from psycopg.pq import TransactionStatus
 
 from pg_nearest_city.base_nearest_city import (
     BaseNearestCity,
@@ -45,7 +46,12 @@ class NearestCity:
     def __enter__(self):
         """Open the context manager."""
         self.connection = self.get_connection(self._db)
-        self.initialize()
+        try:
+            self.initialize()
+        except BaseException:
+            # __exit__ is not called when __enter__ raises
+            self.__exit__(None, None, None)
+            raise
         self._is_initialized = True
         return self
 
@@ -127,6 +133,9 @@ class NearestCity:
             raise
         except Exception as e:
             self._logger.error("Database initialization failed: %s", str(e))
+            # Clear an aborted transaction so the unlock below can run
+            if self.connection.info.transaction_status == TransactionStatus.INERROR:
+                self.connection.rollback()
             raise RuntimeError(f"Database initialization failed: {str(e)}") from e
         finally:
             with self.connection.cursor() as cur:

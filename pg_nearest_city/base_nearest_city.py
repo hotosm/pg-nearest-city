@@ -6,11 +6,15 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional, cast
 
 from psycopg import sql
+from psycopg.conninfo import make_conninfo
 
 from pg_nearest_city.utils import COMPRESSION_EXTENSIONS
+
+if TYPE_CHECKING:
+    from typing_extensions import LiteralString
 
 
 @dataclass
@@ -57,11 +61,13 @@ class DbConfig:
 
     def get_connection_string(self) -> str:
         """Connection string that psycopg accepts."""
-        parts = [f"dbname={self.dbname}", f"user={self.user}"]
-        if self.password:
-            parts.append(f"password={self.password}")
-        parts.extend([f"host={self.host}", f"port={self.port}"])
-        return " ".join(parts)
+        return make_conninfo(
+            dbname=self.dbname,
+            user=self.user,
+            password=self.password or None,
+            host=self.host,
+            port=self.port,
+        )
 
 
 @dataclass
@@ -289,43 +295,37 @@ class BaseNearestCity:
         return None
 
     @staticmethod
-    def _get_bootstrap_sql() -> list[bytes]:
-        """Return SQL statements that create the permanent tables from scratch.
-
-        Returns bytes because psycopg's sql.SQL requires LiteralString,
-        but these are built dynamically from table definitions. bytes
-        is accepted by cur.execute() without the LiteralString constraint.
-        """
+    def _get_bootstrap_sql() -> list[sql.SQL | sql.Composed]:
+        """Return SQL statements that create the permanent tables from scratch."""
         from pg_nearest_city.db.tables import get_tables_in_creation_order
 
         tables = get_tables_in_creation_order(filters=[{"is_temp": False}])
 
-        stmts: list[bytes] = [
-            b"CREATE EXTENSION IF NOT EXISTS postgis",
-            b"CREATE EXTENSION IF NOT EXISTS btree_gist",
+        stmts: list[sql.SQL | sql.Composed] = [
+            sql.SQL("CREATE EXTENSION IF NOT EXISTS postgis"),
+            sql.SQL("CREATE EXTENSION IF NOT EXISTS btree_gist"),
         ]
         for table_cls in reversed(tables):
             stmts.append(
-                sql.SQL("DROP TABLE IF EXISTS {tbl}")
-                .format(tbl=sql.Identifier(table_cls.name))
-                .as_string(None)
-                .encode()
+                sql.SQL("DROP TABLE IF EXISTS {tbl}").format(
+                    tbl=sql.Identifier(table_cls.name)
+                )
             )
+        # Table and index DDL is built from our own definitions, never user input
         for table_cls in tables:
-            stmts.append(
-                table_cls.create_sql()
-                .replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS")
-                .encode()
+            create = table_cls.create_sql().replace(
+                "CREATE TABLE", "CREATE TABLE IF NOT EXISTS"
             )
+            stmts.append(sql.SQL(cast("LiteralString", create)))
         return stmts
 
     @staticmethod
-    def _get_bootstrap_index_sql() -> list[bytes]:
+    def _get_bootstrap_index_sql() -> list[sql.SQL]:
         """Return SQL statements that create bootstrap indices."""
         from pg_nearest_city.db.tables import get_tables_in_creation_order
 
         return [
-            idx.index_def.encode()
+            sql.SQL(cast("LiteralString", idx.index_def))
             for t in get_tables_in_creation_order(filters=[{"is_temp": False}])
             for idx in t.get_indices()
         ]

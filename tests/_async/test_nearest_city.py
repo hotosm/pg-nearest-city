@@ -1,6 +1,7 @@
 """Test async geocoder initialization and querying."""
 
 import os
+from unittest.mock import AsyncMock
 
 import psycopg
 import pytest
@@ -96,6 +97,23 @@ async def test_init_without_context_manager():
     with pytest.raises(RuntimeError):
         geocoder = AsyncNearestCity()
         await geocoder.query(-74.0060, 40.7128)
+
+
+async def test_owned_connection_closed_when_initialization_fails(monkeypatch):
+    """An owned connection must not leak if __aenter__ fails."""
+    conn = AsyncMock()
+    monkeypatch.setattr(
+        AsyncNearestCity, "get_connection", AsyncMock(return_value=conn)
+    )
+    monkeypatch.setattr(
+        AsyncNearestCity, "initialize", AsyncMock(side_effect=RuntimeError)
+    )
+
+    with pytest.raises(RuntimeError):
+        async with AsyncNearestCity():
+            pass
+
+    conn.close.assert_called_once()
 
 
 @pytest.mark.integration

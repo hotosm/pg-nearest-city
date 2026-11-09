@@ -1,11 +1,23 @@
 """Tests for pg_nearest_city.base_nearest_city."""
 
 import pytest
+from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict
 
 from pg_nearest_city.base_nearest_city import (
     BaseNearestCity,
+    DbConfig,
     InitializationStatus,
 )
+
+
+class TestDbConfig:
+    def test_connection_string_quotes_special_characters(self):
+        password = "p ss'word"
+        conn_string = DbConfig(
+            dbname="db", user="u", password=password
+        ).get_connection_string()
+        assert conninfo_to_dict(conn_string)["password"] == password
 
 
 class TestInitializationStatus:
@@ -92,8 +104,7 @@ class TestFindDataPath:
 
 class TestBootstrapSql:
     def test_bootstrap_sql_creates_extensions_and_tables(self):
-        raw = BaseNearestCity._get_bootstrap_sql()
-        stmts = [s.decode() for s in raw]
+        stmts = [s.as_string(None) for s in BaseNearestCity._get_bootstrap_sql()]
         assert any("postgis" in s.lower() for s in stmts)
         assert any("CREATE TABLE IF NOT EXISTS" in s for s in stmts)
         # Country should be created before Geocoding
@@ -107,8 +118,7 @@ class TestBootstrapSql:
         assert country_idx < geocoding_idx
 
     def test_bootstrap_sql_drops_in_reverse_order(self):
-        raw = BaseNearestCity._get_bootstrap_sql()
-        stmts = [s.decode() for s in raw]
+        stmts = [s.as_string(None) for s in BaseNearestCity._get_bootstrap_sql()]
         drop_stmts = [s for s in stmts if "DROP TABLE" in s]
         # Geocoding (depends on Country) should be dropped first
         geocoding_idx = next(
@@ -119,9 +129,16 @@ class TestBootstrapSql:
         )
         assert geocoding_idx < country_idx
 
+    def test_bootstrap_sql_is_composable(self):
+        # OpenTelemetry's SQL commenter calls str() on bytes queries, mangling them
+        stmts = (
+            BaseNearestCity._get_bootstrap_sql()
+            + BaseNearestCity._get_bootstrap_index_sql()
+        )
+        assert all(isinstance(s, sql.Composable) for s in stmts)
+
     def test_bootstrap_index_sql(self):
-        raw = BaseNearestCity._get_bootstrap_index_sql()
-        stmts = [s.decode() for s in raw]
+        stmts = [s.as_string(None) for s in BaseNearestCity._get_bootstrap_index_sql()]
         assert len(stmts) >= 2
         assert all("CREATE INDEX" in s for s in stmts)
 
