@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.1 (2026-11-09)
+
+### Fix
+
+- use psycopg SQL objects for bootstrap (OTel compat), close owned conn on init failure, escape DSN
+
 ## 3.0.0 (2026-11-05)
 
 ### Feat
